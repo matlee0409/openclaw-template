@@ -14,6 +14,7 @@
  */
 
 import { spawn } from 'child_process';
+import pty from 'node-pty';
 import {
   DATA_DIR,
   OPENCLAW_HOME,
@@ -23,6 +24,23 @@ import {
   OPENCLAW_NODE,
 } from '../config/index.js';
 import { log } from '../utils/log.js';
+
+// ─── Auth mode → openclaw authChoice mapping ────────────────────────
+//
+// Some providers support OAuth/device-pairing instead of API keys. These
+// require running `openclaw onboard` interactively (via PTY) so the user
+// can see the device-code URL and complete login in a browser.
+
+const OAUTH_AUTH_CHOICE = {
+  // provider:authMode → openclaw --auth-choice value
+  'openai:oauth': 'openai-codex-device-code',
+};
+
+export function isOauthRequest(data) {
+  if (!data?.authMode || data.authMode === 'apiKey') return false;
+  const key = `${data.provider}:${data.authMode}`;
+  return Boolean(OAUTH_AUTH_CHOICE[key]);
+}
 
 // ─── Provider → authChoice + CLI flag mapping ───────────────────────
 //
@@ -82,12 +100,11 @@ const PROVIDER_MAP = {
 
 export function buildOnboardArgs(data) {
   const workspaceDir = `${DATA_DIR}/.openclaw/workspace`;
+  const interactive = isOauthRequest(data);
 
   const args = [
     'onboard',
-    '--non-interactive',
     '--accept-risk',
-    '--json',
     '--no-install-daemon',
     '--skip-health',
     '--workspace', workspaceDir,
@@ -98,22 +115,35 @@ export function buildOnboardArgs(data) {
     '--flow', 'quickstart',
   ];
 
-  const mapping = PROVIDER_MAP[data.provider];
-  if (!mapping) {
-    throw new Error(`Unknown provider: ${data.provider}`);
+  if (interactive) {
+    // OAuth/device-code flows — onboard prompts the user via stdout, so we
+    // run it under a PTY and stream output to the browser. Skip channel,
+    // skill, search, UI prompts so the only interaction is the OAuth login.
+    args.push('--mode', 'local', '--skip-channels', '--skip-skills', '--skip-search', '--skip-ui');
+  } else {
+    args.push('--non-interactive', '--json');
   }
 
-  args.push('--auth-choice', mapping.authChoice);
+  // ── Auth choice ──────────────────────────────────────────────────
+  // OAuth providers override the standard authChoice with a device-code variant.
 
-  // API key (all providers except ollama)
-  if (mapping.keyFlag && data.apiKey) {
-    args.push(mapping.keyFlag, data.apiKey);
+  let authChoice;
+  if (interactive) {
+    authChoice = OAUTH_AUTH_CHOICE[`${data.provider}:${data.authMode}`];
+  } else {
+    const mapping = PROVIDER_MAP[data.provider];
+    if (!mapping) throw new Error(`Unknown provider: ${data.provider}`);
+    authChoice = mapping.authChoice;
+
+    if (mapping.keyFlag && data.apiKey) {
+      args.push(mapping.keyFlag, data.apiKey);
+    }
+    if (mapping.extra) {
+      args.push(...mapping.extra);
+    }
   }
 
-  // Static extra flags (e.g. Groq's custom base URL)
-  if (mapping.extra) {
-    args.push(...mapping.extra);
-  }
+  args.push('--auth-choice', authChoice);
 
   // ── Provider-specific extra args ──────────────────────────────────
 
@@ -188,6 +218,107 @@ export function runOpenclaw(args, timeoutMs = 60_000) {
     proc.on('close', (code) => {
       clearTimeout(timer);
       resolve({ code: code ?? 0, output: out });
+    });
+  });
+}
+
+/**
+ * Strip ANSI escape sequences and OSC hyperlinks from PTY output so the
+ * streamed text reads cleanly in the browser without needing a terminal
+ * emulator on the client side.
+ */
+export function stripAnsi(value) {
+  return String(value)
+    .replace(/\x1b\]8;;.*?\x1b\\|\x1b\]8;;\x1b\\/g, '')
+    .replace(/\x1b\[[\x20-\x3f]*[\x40-\x7e]/g, '');
+}
+
+/**
+ * Drop transient spinner/progress lines that openclaw redraws over
+ * carriage returns. Without this filter the browser <pre> accumulates
+ * hundreds of "Waiting for device authorization..." lines and the user
+ * loses track of the device-code URL and pairing code (matches reference
+ * template's cleanPtyOutput).
+ */
+function isTransientProgressLine(line) {
+  return /^[\s◐◓◑◒⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏.-]*(Requesting device code|Waiting for device authorization|Exchanging device code)/.test(line);
+}
+
+export function cleanPtyOutput(value) {
+  const cleaned = stripAnsi(value)
+    .split(/\r|\n/)
+    .filter((line) => line && !isTransientProgressLine(line))
+    .join('\n');
+  return cleaned ? cleaned + '\n' : '';
+}
+
+/**
+ * Spawn `node $OPENCLAW_ENTRY <args>` under a pseudo-terminal so openclaw
+ * thinks it's running interactively. Used for OAuth/device-code onboarding
+ * where openclaw prints a login URL + code and waits for the user to
+ * complete browser authentication.
+ *
+ * Calls onOutput(chunk) for every output chunk (ANSI-stripped) and resolves
+ * with { code, output } when the process exits.
+ *
+ * autoInputs: array of { pattern: RegExp, input: string } — when accumulated
+ *   output matches `pattern`, we send `input` to the PTY (used to auto-answer
+ *   non-OAuth prompts like "Enable hooks?").
+ */
+export function runOpenclawPty(args, opts = {}) {
+  return new Promise((resolve) => {
+    const { onOutput, autoInputs = [] } = opts;
+    const sentAutoInputs = new Set();
+    let out = '';
+    let proc;
+
+    try {
+      proc = pty.spawn(OPENCLAW_NODE, [OPENCLAW_ENTRY, ...args], {
+        name: 'xterm-color',
+        cols: 100,
+        rows: 30,
+        cwd: process.cwd(),
+        env: {
+          ...OPENCLAW_ENV,
+          // Force openclaw's *local* device-code branch so the short code
+          // is printed in stdout instead of being hidden behind a remote-only
+          // OAuth redirect (matches reference template).
+          DISPLAY: process.env.DISPLAY || ':0',
+          WAYLAND_DISPLAY: process.env.WAYLAND_DISPLAY || 'wayland-0',
+          SSH_CLIENT: '',
+          SSH_TTY: '',
+          SSH_CONNECTION: '',
+          FORCE_COLOR: '0',
+          NO_COLOR: '1',
+        },
+      });
+    } catch (err) {
+      const msg = `\n[spawn error] ${String(err)}\n`;
+      onOutput?.(msg);
+      return resolve({ code: 127, output: msg });
+    }
+
+    proc.onData((data) => {
+      // Two passes:
+      //  1. Filtered chunk for the user — drops spinner spam so URL/code stay visible
+      //  2. Raw stripped chunk for autoInputs pattern matching (must keep all output
+      //     so prompts that briefly appear are detected)
+      const filtered = cleanPtyOutput(data);
+      const raw = stripAnsi(data);
+      out += raw;
+
+      for (const { input, pattern } of autoInputs) {
+        const key = String(pattern);
+        if (sentAutoInputs.has(key) || !pattern.test(out)) continue;
+        sentAutoInputs.add(key);
+        proc.write(input);
+      }
+
+      if (filtered) onOutput?.(filtered);
+    });
+
+    proc.onExit(({ exitCode }) => {
+      resolve({ code: exitCode ?? 0, output: out });
     });
   });
 }

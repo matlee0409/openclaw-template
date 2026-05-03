@@ -31,10 +31,19 @@ export function validateSetupForm(body) {
     errors.push('Invalid provider selected.');
   }
 
+  // ── Auth mode (apiKey | oauth) ────────────────────────────────
+  // Only OpenAI currently supports an OAuth flow ("Sign in with ChatGPT").
+  data.authMode = oneOf(body.authMode, ['apiKey', 'oauth'], 'apiKey');
+  const OAUTH_SUPPORTED_PROVIDERS = ['openai'];
+  if (data.authMode === 'oauth' && !OAUTH_SUPPORTED_PROVIDERS.includes(data.provider)) {
+    errors.push(`OAuth login is not available for ${data.provider}.`);
+  }
+
   // ── API key ───────────────────────────────────────────────────
   data.apiKey = (body.apiKey || '').trim();
   const NO_API_KEY_PROVIDERS = ['ollama', 'vllm', 'sglang'];
-  if (!NO_API_KEY_PROVIDERS.includes(data.provider) && !data.apiKey) {
+  const isOauth = data.authMode === 'oauth';
+  if (!isOauth && !NO_API_KEY_PROVIDERS.includes(data.provider) && !data.apiKey) {
     errors.push('API key is required.');
   }
 

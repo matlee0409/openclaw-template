@@ -264,6 +264,23 @@
     <input type="text" id="model" name="model" placeholder="Leave blank for default">
   </div>
 
+  <div class="field" id="field-authMode" style="display:none">
+    <label>Authentication</label>
+    <div style="display:flex; gap:14px; flex-wrap:wrap; padding:8px 0 2px;">
+      <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+        <input type="radio" name="authMode" value="apiKey" checked onchange="onAuthModeChange()">
+        <span style="font-size:13px;">API key</span>
+      </label>
+      <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+        <input type="radio" name="authMode" value="oauth" onchange="onAuthModeChange()">
+        <span style="font-size:13px;">Sign in with ChatGPT <span class="hint" style="margin-left:4px">(OAuth, no API key)</span></span>
+      </label>
+    </div>
+    <div class="field-hint" id="auth-mode-hint" style="display:none; margin-top:4px;">
+      You'll be shown a one-time URL + code &mdash; open it in a browser and complete login. Onboarding pauses until you finish.
+    </div>
+  </div>
+
   <div class="field" id="field-apiKey">
     <label for="apiKey"><span id="apikey-label">API Key</span> <span class="req">*</span></label>
     <input type="password" id="apiKey" name="apiKey" placeholder="Paste your API key" autocomplete="off">
@@ -476,6 +493,51 @@
   <div id="pairing-status" style="margin-top:12px; font-family:var(--font-mono); font-size:12px; display:none;"></div>
 </div>
 
+<!-- OAuth live output (only shown during ChatGPT OAuth onboarding) -->
+<div id="oauth-output-card" class="card" style="display:none;">
+  <div class="card-title">&#x1F511; OAuth Sign-in</div>
+
+  <!-- Prominent device-code box — populated as soon as URL+code are parsed from the stream -->
+  <div id="oauth-code-box" style="display:none; background:var(--surface2); border:2px solid var(--accent);
+       border-radius:10px; padding:20px 22px; margin-bottom:16px;">
+    <div style="font-size:11px; color:var(--text-dim); letter-spacing:0.06em;
+                text-transform:uppercase; margin-bottom:8px;">
+      Step 1 &mdash; open this URL in a browser
+    </div>
+    <a id="oauth-url" href="#" target="_blank" rel="noopener"
+       style="display:inline-block; font-family:var(--font-mono); font-size:15px;
+              color:var(--accent2); word-break:break-all; margin-bottom:18px;
+              text-decoration:underline;"></a>
+
+    <div style="font-size:11px; color:var(--text-dim); letter-spacing:0.06em;
+                text-transform:uppercase; margin-bottom:6px;">
+      Step 2 &mdash; enter this code on the page
+    </div>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <div id="oauth-code" style="font-family:var(--font-mono); font-size:24px; font-weight:600;
+                                  color:var(--accent); letter-spacing:0.12em;"></div>
+      <button type="button" id="oauth-copy-btn" onclick="copyOauthCode()"
+              style="background:var(--surface); border:1px solid var(--border); border-radius:6px;
+                     color:var(--text); font-family:var(--font-mono); font-size:11px;
+                     padding:5px 10px; cursor:pointer;">copy</button>
+    </div>
+
+    <p style="font-size:11px; color:var(--text-dim); margin-top:14px; margin-bottom:0;">
+      Code expires in 15 minutes. This page will continue automatically once you finish.
+    </p>
+  </div>
+
+  <details style="margin-bottom:0;">
+    <summary style="font-size:12px; color:var(--text-dim); cursor:pointer; user-select:none;">
+      Show live output from <code>openclaw onboard</code>
+    </summary>
+    <pre id="oauth-output" style="background:var(--bg); border:1px solid var(--border); border-radius:8px;
+         padding:14px; max-height:280px; overflow:auto; margin-top:10px;
+         font-family:var(--font-mono); font-size:11px; line-height:1.5; color:var(--text-dim);
+         white-space:pre-wrap; word-break:break-word;"></pre>
+  </details>
+</div>
+
 <!-- Launch -->
 <div class="launch-area">
   <button class="btn-launch" id="btn-launch" onclick="launch()">
@@ -539,9 +601,19 @@ function onProviderChange() {
   const isCloudflare = provider === 'cloudflare';
   const noApiKey     = ['ollama', 'vllm', 'sglang'].includes(provider);
   const showCustomUrl = isSelfHosted || isCustom;
+  const supportsOauth = provider === 'openai';
 
-  // API key visibility
-  document.getElementById('field-apiKey').style.display = noApiKey ? 'none' : '';
+  // Auth-mode toggle (currently only OpenAI supports OAuth)
+  document.getElementById('field-authMode').style.display = supportsOauth ? '' : 'none';
+  if (!supportsOauth) {
+    // Reset to API key when switching away from OpenAI
+    const apiKeyRadio = document.querySelector('input[name="authMode"][value="apiKey"]');
+    if (apiKeyRadio) apiKeyRadio.checked = true;
+  }
+
+  // API key visibility (also hidden when OAuth is selected)
+  const oauthSelected = supportsOauth && getAuthMode() === 'oauth';
+  document.getElementById('field-apiKey').style.display = (noApiKey || oauthSelected) ? 'none' : '';
 
   // Ollama-specific fields
   document.getElementById('field-ollamaUrl').style.display    = isOllama ? '' : 'none';
@@ -704,6 +776,19 @@ function collectForm() {
   return data;
 }
 
+// ── Auth mode helpers ─────────────────────────────────────────────
+function getAuthMode() {
+  const checked = document.querySelector('input[name="authMode"]:checked');
+  return checked ? checked.value : 'apiKey';
+}
+
+function onAuthModeChange() {
+  const mode = getAuthMode();
+  const isOauth = mode === 'oauth';
+  document.getElementById('field-apiKey').style.display = isOauth ? 'none' : '';
+  document.getElementById('auth-mode-hint').style.display = isOauth ? '' : 'none';
+}
+
 // ── Launch ────────────────────────────────────────────────────────
 async function launch() {
   const btn    = document.getElementById('btn-launch');
@@ -713,59 +798,154 @@ async function launch() {
 
   btn.disabled = true;
   status.className = 'running';
-  status.innerHTML = '<span class="spinner"></span> Saving config and launching gateway\u2026';
   errBox.classList.remove('visible');
 
   const body = collectForm();
+  const isOauth = body.authMode === 'oauth';
 
   try {
-    const res = await fetch('/setup/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify(body),
-    });
-
-    const data = await res.json();
-
-    if (!res.ok || !data.ok) {
-      if (data.errors && data.errors.length) {
-        errItems.innerHTML = data.errors.map(e => '<li>' + escHtml(e) + '</li>').join('');
-        errBox.classList.add('visible');
-        status.className = '';
-        status.style.display = 'none';
-        btn.disabled = false;
-        return;
-      }
-      // If already running, show admin link
-      if (res.status === 409) {
-        status.className = 'ok';
-        status.textContent = data.error || 'Gateway is already running.';
-        document.getElementById('admin-link').style.display = 'block';
-        return;
-      }
-      throw new Error(data.error || 'Unknown error');
-    }
-
-    status.className = 'running';
-    status.innerHTML = '<span class="spinner"></span> Gateway starting\u2026 watching for ready state\u2026';
-    await pollUntilRunning();
-
-    status.className = 'ok';
-    status.textContent = '\u2713 Gateway is running!';
-
-    // Check if any channel has pairing policy — show pairing step
-    if (hasPairingChannels()) {
-      showPairingStep();
+    if (isOauth) {
+      await launchOauth(body, status);
     } else {
-      status.textContent += ' Redirecting to admin\u2026';
-      setTimeout(function() { window.location.href = '/admin'; }, 1500);
+      await launchApiKey(body, status, errBox, errItems);
     }
   } catch (err) {
     status.className = 'err';
-    status.textContent = '\u2717 ' + err.message;
+    status.textContent = '✗ ' + err.message;
     document.getElementById('admin-link').style.display = 'block';
     btn.disabled = false;
+  }
+}
+
+async function launchApiKey(body, status, errBox, errItems) {
+  status.innerHTML = '<span class="spinner"></span> Saving config and launching gateway…';
+
+  const res = await fetch('/setup/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(body),
+  });
+
+  const data = await res.json();
+
+  if (!res.ok || !data.ok) {
+    if (data.errors && data.errors.length) {
+      errItems.innerHTML = data.errors.map(e => '<li>' + escHtml(e) + '</li>').join('');
+      errBox.classList.add('visible');
+      status.className = '';
+      status.style.display = 'none';
+      document.getElementById('btn-launch').disabled = false;
+      return;
+    }
+    if (res.status === 409) {
+      status.className = 'ok';
+      status.textContent = data.error || 'Gateway is already running.';
+      document.getElementById('admin-link').style.display = 'block';
+      return;
+    }
+    throw new Error(data.error || 'Unknown error');
+  }
+
+  status.className = 'running';
+  status.innerHTML = '<span class="spinner"></span> Gateway starting… watching for ready state…';
+  await pollUntilRunning();
+
+  status.className = 'ok';
+  status.textContent = '✓ Gateway is running!';
+
+  if (hasPairingChannels()) {
+    showPairingStep();
+  } else {
+    status.textContent += ' Redirecting to admin…';
+    setTimeout(function() { window.location.href = '/admin'; }, 1500);
+  }
+}
+
+function copyOauthCode() {
+  const code = document.getElementById('oauth-code').textContent || '';
+  if (!code) return;
+  navigator.clipboard.writeText(code).catch(() => {});
+  const btn = document.getElementById('oauth-copy-btn');
+  const orig = btn.textContent;
+  btn.textContent = 'copied';
+  setTimeout(function() { btn.textContent = orig; }, 1500);
+}
+
+// Pull the device-code URL + short code out of openclaw's banner so we can
+// render them in their own box instead of letting the user hunt through logs.
+function tryExtractOauthCreds(buffer) {
+  const box = document.getElementById('oauth-code-box');
+  if (box.style.display !== 'none') return; // already populated
+
+  const urlMatch = buffer.match(/https:\/\/[a-z0-9.\-]+\/[a-z0-9.\-/]*device[^\s│]*/i);
+  // openclaw prints "Code: H6YX-9C9MX" — letters/digits with optional dashes
+  const codeMatch = buffer.match(/Code:\s+([A-Z0-9][A-Z0-9-]{4,})/);
+
+  if (urlMatch && codeMatch) {
+    const link = document.getElementById('oauth-url');
+    link.href = urlMatch[0];
+    link.textContent = urlMatch[0];
+    document.getElementById('oauth-code').textContent = codeMatch[1];
+    box.style.display = '';
+  }
+}
+
+async function launchOauth(body, status) {
+  const card = document.getElementById('oauth-output-card');
+  const out  = document.getElementById('oauth-output');
+  document.getElementById('oauth-code-box').style.display = 'none';
+  document.getElementById('oauth-url').textContent = '';
+  document.getElementById('oauth-code').textContent = '';
+  card.style.display = '';
+  out.textContent = '';
+  status.innerHTML = '<span class="spinner"></span> Starting OAuth onboarding…';
+
+  const res = await fetch('/setup/save', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    let errText = '';
+    try { errText = await res.text(); } catch {}
+    throw new Error('OAuth onboarding failed: ' + (errText || res.statusText));
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    out.textContent = buffer;
+    out.scrollTop = out.scrollHeight;
+    tryExtractOauthCreds(buffer);
+    // Once URL+code are visible, update status to direct the user there
+    if (document.getElementById('oauth-code-box').style.display !== 'none') {
+      status.innerHTML = '<span class="spinner"></span> Waiting for ChatGPT sign-in…';
+    }
+  }
+
+  if (/\[setup\] Complete\./.test(buffer)) {
+    document.getElementById('oauth-code-box').style.display = 'none';
+    status.className = 'running';
+    status.innerHTML = '<span class="spinner"></span> Gateway starting… watching for ready state…';
+    await pollUntilRunning();
+    status.className = 'ok';
+    status.textContent = '✓ Gateway is running!';
+    if (hasPairingChannels()) {
+      showPairingStep();
+    } else {
+      status.textContent += ' Redirecting to admin…';
+      setTimeout(function() { window.location.href = '/admin'; }, 1500);
+    }
+  } else {
+    throw new Error('OAuth onboarding did not complete. Review the output above.');
   }
 }
 
