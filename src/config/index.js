@@ -39,6 +39,19 @@ export const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN || null
 // Set OLLAMA_BASE_URL in Railway env vars (e.g. http://ollama.railway.internal:11434).
 export const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || null;
 
+// Path to openclaw's entry.js — invoking via `node entry.js` is more reliable
+// than the bin wrapper (avoids env-detection quirks in containers and lets us
+// load openclaw/plugin-sdk/device-bootstrap via createRequire from the same path).
+export const OPENCLAW_ENTRY =
+  process.env.OPENCLAW_ENTRY?.trim() ||
+  '/usr/local/lib/node_modules/openclaw/dist/entry.js';
+export const OPENCLAW_NODE = process.env.OPENCLAW_NODE?.trim() || 'node';
+
+// Make OPENCLAW_STATE_DIR visible to any in-process openclaw SDK we load.
+// The device-bootstrap SDK reads this env var to find pending.json/paired.json.
+process.env.OPENCLAW_STATE_DIR = OPENCLAW_HOME;
+process.env.HOME = DATA_DIR;
+
 export const config = {
   DATA_DIR,
   OPENCLAW_HOME,

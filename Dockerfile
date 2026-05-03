@@ -24,8 +24,12 @@ RUN npm install --omit=dev
 # ─── Stage 2: Runtime ────────────────────────────────────────────────────────
 FROM node:22-bookworm-slim
 
-# OpenClaw version — set via Railway build args to pin a specific version
-ARG OPENCLAW_VERSION=latest
+# OpenClaw version — set via Railway build args to pin a specific version.
+# Default is 2026.5.2: this is the version verified working with the
+# device-bootstrap SDK approach. Earlier 2026.3.12+ releases shipped two
+# bugs (issues #45504 + #51779) that caused CLI `devices approve` to fail
+# with WS handshake race + missing operator.admin scope.
+ARG OPENCLAW_VERSION=2026.5.2
 
 # Runtime deps:
 # - bash: required by node-pty for the shell
@@ -66,6 +70,12 @@ ENV PATH="/app/node_modules/.bin:${PATH}"
 ENV PORT=3000
 ENV NODE_ENV=production
 ENV OPENCLAW_DATA_DIR=/data
+
+# Path to openclaw's entry.js — the wrapper invokes it directly via `node`
+# (not the bin shim) and resolves the in-process device-bootstrap SDK
+# relative to this path.
+ENV OPENCLAW_ENTRY=/usr/local/lib/node_modules/openclaw/dist/entry.js
+ENV OPENCLAW_NODE=node
 
 EXPOSE 3000
 

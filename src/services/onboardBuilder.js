@@ -19,6 +19,8 @@ import {
   OPENCLAW_HOME,
   OPENCLAW_GATEWAY_TOKEN,
   GATEWAY_PORT,
+  OPENCLAW_ENTRY,
+  OPENCLAW_NODE,
 } from '../config/index.js';
 import { log } from '../utils/log.js';
 
@@ -157,12 +159,13 @@ const OPENCLAW_ENV = {
 };
 
 /**
- * Spawns `openclaw <args>` and returns { code, output }.
- * All commands run with HOME=/data so openclaw writes to the volume.
+ * Spawns `node $OPENCLAW_ENTRY <args>` and returns { code, output }.
+ * Invoking entry.js directly (rather than the bin wrapper) is more reliable
+ * in containers and matches the reference Railway template's approach.
  */
 export function runOpenclaw(args, timeoutMs = 60_000) {
   return new Promise((resolve) => {
-    const proc = spawn('openclaw', args, {
+    const proc = spawn(OPENCLAW_NODE, [OPENCLAW_ENTRY, ...args], {
       env: OPENCLAW_ENV,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
