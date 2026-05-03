@@ -496,14 +496,46 @@
 <!-- OAuth live output (only shown during ChatGPT OAuth onboarding) -->
 <div id="oauth-output-card" class="card" style="display:none;">
   <div class="card-title">&#x1F511; OAuth Sign-in</div>
-  <p style="font-size:12px; color:var(--text-dim); margin-bottom:10px;">
-    OpenClaw is showing a device-code URL. Open it in a browser and complete sign-in.
-    This page will continue once authentication is done.
-  </p>
-  <pre id="oauth-output" style="background:var(--bg); border:1px solid var(--border); border-radius:8px;
-       padding:14px; max-height:420px; overflow:auto;
-       font-family:var(--font-mono); font-size:12px; line-height:1.5; color:var(--text);
-       white-space:pre-wrap; word-break:break-word;"></pre>
+
+  <!-- Prominent device-code box — populated as soon as URL+code are parsed from the stream -->
+  <div id="oauth-code-box" style="display:none; background:var(--surface2); border:2px solid var(--accent);
+       border-radius:10px; padding:20px 22px; margin-bottom:16px;">
+    <div style="font-size:11px; color:var(--text-dim); letter-spacing:0.06em;
+                text-transform:uppercase; margin-bottom:8px;">
+      Step 1 &mdash; open this URL in a browser
+    </div>
+    <a id="oauth-url" href="#" target="_blank" rel="noopener"
+       style="display:inline-block; font-family:var(--font-mono); font-size:15px;
+              color:var(--accent2); word-break:break-all; margin-bottom:18px;
+              text-decoration:underline;"></a>
+
+    <div style="font-size:11px; color:var(--text-dim); letter-spacing:0.06em;
+                text-transform:uppercase; margin-bottom:6px;">
+      Step 2 &mdash; enter this code on the page
+    </div>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <div id="oauth-code" style="font-family:var(--font-mono); font-size:24px; font-weight:600;
+                                  color:var(--accent); letter-spacing:0.12em;"></div>
+      <button type="button" id="oauth-copy-btn" onclick="copyOauthCode()"
+              style="background:var(--surface); border:1px solid var(--border); border-radius:6px;
+                     color:var(--text); font-family:var(--font-mono); font-size:11px;
+                     padding:5px 10px; cursor:pointer;">copy</button>
+    </div>
+
+    <p style="font-size:11px; color:var(--text-dim); margin-top:14px; margin-bottom:0;">
+      Code expires in 15 minutes. This page will continue automatically once you finish.
+    </p>
+  </div>
+
+  <details style="margin-bottom:0;">
+    <summary style="font-size:12px; color:var(--text-dim); cursor:pointer; user-select:none;">
+      Show live output from <code>openclaw onboard</code>
+    </summary>
+    <pre id="oauth-output" style="background:var(--bg); border:1px solid var(--border); border-radius:8px;
+         padding:14px; max-height:280px; overflow:auto; margin-top:10px;
+         font-family:var(--font-mono); font-size:11px; line-height:1.5; color:var(--text-dim);
+         white-space:pre-wrap; word-break:break-word;"></pre>
+  </details>
 </div>
 
 <!-- Launch -->
@@ -830,14 +862,44 @@ async function launchApiKey(body, status, errBox, errItems) {
   }
 }
 
+function copyOauthCode() {
+  const code = document.getElementById('oauth-code').textContent || '';
+  if (!code) return;
+  navigator.clipboard.writeText(code).catch(() => {});
+  const btn = document.getElementById('oauth-copy-btn');
+  const orig = btn.textContent;
+  btn.textContent = 'copied';
+  setTimeout(function() { btn.textContent = orig; }, 1500);
+}
+
+// Pull the device-code URL + short code out of openclaw's banner so we can
+// render them in their own box instead of letting the user hunt through logs.
+function tryExtractOauthCreds(buffer) {
+  const box = document.getElementById('oauth-code-box');
+  if (box.style.display !== 'none') return; // already populated
+
+  const urlMatch = buffer.match(/https:\/\/[a-z0-9.\-]+\/[a-z0-9.\-/]*device[^\s│]*/i);
+  // openclaw prints "Code: H6YX-9C9MX" — letters/digits with optional dashes
+  const codeMatch = buffer.match(/Code:\s+([A-Z0-9][A-Z0-9-]{4,})/);
+
+  if (urlMatch && codeMatch) {
+    const link = document.getElementById('oauth-url');
+    link.href = urlMatch[0];
+    link.textContent = urlMatch[0];
+    document.getElementById('oauth-code').textContent = codeMatch[1];
+    box.style.display = '';
+  }
+}
+
 async function launchOauth(body, status) {
-  // Stream PTY output. The user sees the device-code URL + short code,
-  // opens it in another browser tab, and completes ChatGPT sign-in.
   const card = document.getElementById('oauth-output-card');
   const out  = document.getElementById('oauth-output');
+  document.getElementById('oauth-code-box').style.display = 'none';
+  document.getElementById('oauth-url').textContent = '';
+  document.getElementById('oauth-code').textContent = '';
   card.style.display = '';
   out.textContent = '';
-  status.innerHTML = '<span class="spinner"></span> Starting OAuth onboarding… watch the output below';
+  status.innerHTML = '<span class="spinner"></span> Starting OAuth onboarding…';
 
   const res = await fetch('/setup/save', {
     method: 'POST',
@@ -862,9 +924,15 @@ async function launchOauth(body, status) {
     buffer += decoder.decode(value, { stream: true });
     out.textContent = buffer;
     out.scrollTop = out.scrollHeight;
+    tryExtractOauthCreds(buffer);
+    // Once URL+code are visible, update status to direct the user there
+    if (document.getElementById('oauth-code-box').style.display !== 'none') {
+      status.innerHTML = '<span class="spinner"></span> Waiting for ChatGPT sign-in…';
+    }
   }
 
   if (/\[setup\] Complete\./.test(buffer)) {
+    document.getElementById('oauth-code-box').style.display = 'none';
     status.className = 'running';
     status.innerHTML = '<span class="spinner"></span> Gateway starting… watching for ready state…';
     await pollUntilRunning();

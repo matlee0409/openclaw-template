@@ -234,6 +234,25 @@ export function stripAnsi(value) {
 }
 
 /**
+ * Drop transient spinner/progress lines that openclaw redraws over
+ * carriage returns. Without this filter the browser <pre> accumulates
+ * hundreds of "Waiting for device authorization..." lines and the user
+ * loses track of the device-code URL and pairing code (matches reference
+ * template's cleanPtyOutput).
+ */
+function isTransientProgressLine(line) {
+  return /^[\s◐◓◑◒⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏.-]*(Requesting device code|Waiting for device authorization|Exchanging device code)/.test(line);
+}
+
+export function cleanPtyOutput(value) {
+  const cleaned = stripAnsi(value)
+    .split(/\r|\n/)
+    .filter((line) => line && !isTransientProgressLine(line))
+    .join('\n');
+  return cleaned ? cleaned + '\n' : '';
+}
+
+/**
  * Spawn `node $OPENCLAW_ENTRY <args>` under a pseudo-terminal so openclaw
  * thinks it's running interactively. Used for OAuth/device-code onboarding
  * where openclaw prints a login URL + code and waits for the user to
@@ -280,9 +299,13 @@ export function runOpenclawPty(args, opts = {}) {
     }
 
     proc.onData((data) => {
-      const chunk = stripAnsi(data);
-      if (!chunk) return;
-      out += chunk;
+      // Two passes:
+      //  1. Filtered chunk for the user — drops spinner spam so URL/code stay visible
+      //  2. Raw stripped chunk for autoInputs pattern matching (must keep all output
+      //     so prompts that briefly appear are detected)
+      const filtered = cleanPtyOutput(data);
+      const raw = stripAnsi(data);
+      out += raw;
 
       for (const { input, pattern } of autoInputs) {
         const key = String(pattern);
@@ -291,7 +314,7 @@ export function runOpenclawPty(args, opts = {}) {
         proc.write(input);
       }
 
-      onOutput?.(chunk);
+      if (filtered) onOutput?.(filtered);
     });
 
     proc.onExit(({ exitCode }) => {
