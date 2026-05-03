@@ -13,7 +13,7 @@ import fs from 'fs/promises';
 import { createReadStream } from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { config, DATA_DIR, OPENCLAW_HOME, OPENCLAW_GATEWAY_TOKEN, WRAPPER_ADMIN_PASSWORD, OLLAMA_BASE_URL } from '../config/index.js';
+import { config, DATA_DIR, OPENCLAW_HOME, OPENCLAW_GATEWAY_TOKEN, WRAPPER_ADMIN_PASSWORD, OLLAMA_BASE_URL, OPENCLAW_ENTRY, OPENCLAW_NODE } from '../config/index.js';
 import { gatewayManager } from '../services/gatewayManager.js';
 import {
   buildOnboardArgs, runOpenclaw,
@@ -225,9 +225,11 @@ setupRoutes.post('/pairing/approve', async (req, res) => {
 
   try {
     const env = { ...process.env, HOME: DATA_DIR, OPENCLAW_STATE_DIR: OPENCLAW_HOME };
-    const args = ['pairing', 'approve', String(channel), String(code)];
+    // `pairing approve` mutates local state; it does NOT make a gateway RPC,
+    // so passing --token is unnecessary and triggers the WS scope check bug.
+    const args = [OPENCLAW_ENTRY, 'pairing', 'approve', String(channel), String(code)];
 
-    const { stdout } = await execFileAsync('openclaw', args, { env, timeout: 15_000 });
+    const { stdout } = await execFileAsync(OPENCLAW_NODE, args, { env, timeout: 30_000 });
     log.info(`Pairing approve result: ${stdout}`);
     res.json({ ok: true, output: stdout });
   } catch (err) {

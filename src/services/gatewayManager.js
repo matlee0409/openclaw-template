@@ -22,6 +22,8 @@ import {
   OPENCLAW_GATEWAY_TOKEN,
   OPENCLAW_STATE_DIR,
   DATA_DIR,
+  OPENCLAW_ENTRY,
+  OPENCLAW_NODE,
 } from '../config/index.js';
 import { log } from '../utils/log.js';
 
@@ -232,7 +234,9 @@ class GatewayManager extends EventEmitter {
       args.push('--auth', 'token', '--token', OPENCLAW_GATEWAY_TOKEN);
     }
 
-    this._proc = spawn('openclaw', args, {
+    // Invoke entry.js directly via node — matches reference template, avoids
+    // bin-wrapper init quirks in containers.
+    this._proc = spawn(OPENCLAW_NODE, [OPENCLAW_ENTRY, ...args], {
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false,

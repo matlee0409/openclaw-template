@@ -16,9 +16,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { execFileSync } from 'child_process';
 
-import { config } from './config/index.js';
+import { config, OPENCLAW_ENTRY, OPENCLAW_NODE } from './config/index.js';
 import { gatewayManager } from './services/gatewayManager.js';
-import { pairingService } from './services/pairingService.js';
+import { pairingService, probeDeviceBootstrapSdk } from './services/pairingService.js';
 import { attachTerminalWebSocket, terminalWss } from './services/terminalService.js';
 import { setupRoutes } from './routes/setup.js';
 import { apiRoutes } from './routes/api.js';
@@ -32,14 +32,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function main() {
   // ── Startup sanity checks ──────────────────────────────────────
+  // Verify openclaw entry.js is reachable. We invoke it directly via node
+  // (not the bin wrapper) everywhere, so this is what actually matters.
   try {
-    execFileSync('openclaw', ['--version'], { stdio: 'ignore' });
+    execFileSync(OPENCLAW_NODE, [OPENCLAW_ENTRY, '--version'], { stdio: 'ignore' });
   } catch {
-    log.error('❌ `openclaw` binary not found in PATH.');
-    log.error('   PATH = ' + process.env.PATH);
-    log.error('   Check that node_modules/.bin is in PATH (Dockerfile ENV PATH setting).');
+    log.error('❌ openclaw entry.js not found or failed to run.');
+    log.error(`   OPENCLAW_NODE  = ${OPENCLAW_NODE}`);
+    log.error(`   OPENCLAW_ENTRY = ${OPENCLAW_ENTRY}`);
+    log.error('   Check Dockerfile installs openclaw globally and the path is correct.');
     process.exit(1);
   }
+
+  // Probe the in-process device-bootstrap SDK so we know on boot whether
+  // openclaw's dist layout is intact (we use it for device list/approve).
+  void probeDeviceBootstrapSdk();
 
   // 1. Ensure all required directories exist on the volume
   await ensureDataDir();
