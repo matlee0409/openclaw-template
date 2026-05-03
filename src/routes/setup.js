@@ -16,8 +16,9 @@ import { promisify } from 'util';
 import { config, DATA_DIR, OPENCLAW_HOME, OPENCLAW_GATEWAY_TOKEN, WRAPPER_ADMIN_PASSWORD, OLLAMA_BASE_URL, OPENCLAW_ENTRY, OPENCLAW_NODE } from '../config/index.js';
 import { gatewayManager } from '../services/gatewayManager.js';
 import {
-  buildOnboardArgs, runOpenclaw,
+  buildOnboardArgs, runOpenclaw, runOpenclawPty,
   runConfigSet, runConfigSetJson, runModelsSet,
+  isOauthRequest,
 } from '../services/onboardBuilder.js';
 import { validateSetupForm } from '../utils/validation.js';
 import { log } from '../utils/log.js';
@@ -87,6 +88,90 @@ setupRoutes.get('/api/ollama-models', async (req, res) => {
 });
 
 // ── POST /setup/save — write config + launch gateway ───────────────
+//
+// Two response modes:
+//   • API-key flow → JSON response
+//   • OAuth flow   → text/plain stream so the user can see the device-code URL
+//                    that openclaw prints during interactive onboarding
+
+async function applyPostOnboardConfig(data, stream) {
+  const log_ = (msg) => stream ? stream(msg + '\n') : log.info(msg);
+
+  log_('Patching gateway config...');
+  await runConfigSet('gateway.controlUi.allowInsecureAuth', 'true');
+  if (OPENCLAW_GATEWAY_TOKEN) {
+    await runConfigSet('gateway.auth.token', OPENCLAW_GATEWAY_TOKEN);
+  }
+  await runConfigSetJson('gateway.trustedProxies', ['127.0.0.1', '::1']);
+  await runConfigSetJson('gateway.controlUi.allowedOrigins', ['*']);
+
+  if (data.model) {
+    log_(`Setting model to ${data.model}...`);
+    await runModelsSet(data.model);
+  }
+
+  if (data.telegramBotToken) {
+    log_('Configuring Telegram channel...');
+    await runConfigSetJson('channels.telegram', {
+      enabled: true,
+      botToken: data.telegramBotToken,
+      dmPolicy: data.telegramDmPolicy || 'pairing',
+      groupPolicy: 'open',
+      streaming: { mode: 'partial' },
+      ...(data.telegramAllowFrom
+        ? { allowFrom: data.telegramAllowFrom.split(/[,\n]/).map(s => s.trim()).filter(Boolean) }
+        : {}),
+      ...(data.telegramWebhookUrl ? { webhookUrl: data.telegramWebhookUrl } : {}),
+    });
+  }
+
+  if (data.discordBotToken) {
+    log_('Configuring Discord channel...');
+    await runConfigSetJson('channels.discord', {
+      enabled: true,
+      token: data.discordBotToken,
+      groupPolicy: 'open',
+      dm: { policy: data.discordDmPolicy || 'pairing' },
+      ...(data.discordAllowFrom
+        ? { allowFrom: data.discordAllowFrom.split(/[,\n]/).map(s => s.trim()).filter(Boolean) }
+        : {}),
+    });
+  }
+
+  if (data.slackBotToken && data.slackAppToken) {
+    log_('Configuring Slack channel...');
+    await runConfigSetJson('channels.slack', {
+      enabled: true,
+      botToken: data.slackBotToken,
+      appToken: data.slackAppToken,
+    });
+  }
+
+  if (data.googleChatServiceAccount) {
+    await runConfigSetJson('channels.googlechat', {
+      serviceAccount: data.googleChatServiceAccount,
+    });
+  }
+
+  if (data.mattermostUrl && data.mattermostToken) {
+    await runConfigSetJson('channels.mattermost', {
+      url: data.mattermostUrl,
+      token: data.mattermostToken,
+      ...(data.mattermostTeam ? { team: data.mattermostTeam } : {}),
+    });
+  }
+
+  if (data.sessionScope) {
+    const session = { dmScope: data.sessionScope };
+    if (data.sessionResetMode && data.sessionResetMode !== 'off') {
+      session.reset = {
+        mode: data.sessionResetMode,
+        ...(data.sessionResetHour ? { atHour: parseInt(data.sessionResetHour, 10) } : {}),
+      };
+    }
+    await runConfigSetJson('session', session);
+  }
+}
 
 setupRoutes.post('/save', async (req, res) => {
   if (gatewayManager.isRunning() || gatewayManager.getState() === 'starting') {
@@ -101,11 +186,53 @@ setupRoutes.post('/save', async (req, res) => {
     return res.status(400).json({ ok: false, errors });
   }
 
-  try {
-    // ── 1. Run openclaw onboard ──────────────────────────────────
-    const onboardArgs = buildOnboardArgs(data);
-    log.info(`Running: openclaw ${onboardArgs.join(' ').replace(/--\S+-api-key\s+\S+/g, '--***-api-key ***')}`);
+  const interactive = isOauthRequest(data);
+  const onboardArgs = buildOnboardArgs(data);
+  log.info(`Running: openclaw ${onboardArgs.join(' ').replace(/--\S+-api-key\s+\S+/g, '--***-api-key ***')}`);
 
+  // ─── OAuth flow: stream PTY output to the browser ─────────────────
+  if (interactive) {
+    res.set({
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      'X-Accel-Buffering': 'no', // disable nginx buffering if any
+    });
+    const stream = (chunk) => { if (chunk) res.write(chunk); };
+
+    try {
+      stream('Starting OAuth onboarding. A device-code URL will appear below — open it in your browser to sign in.\n\n');
+
+      const onboard = await runOpenclawPty(onboardArgs, {
+        onOutput: stream,
+        autoInputs: [{ pattern: /Enable hooks\?/, input: ' \r' }],
+      });
+
+      stream(`\n[onboard] exit=${onboard.code} configured=${await config.isAlreadyConfigured()}\n`);
+
+      if (onboard.code !== 0 || !(await config.isAlreadyConfigured())) {
+        stream('\n[setup] Onboarding failed. Review the output above.\n');
+        return res.end();
+      }
+
+      await applyPostOnboardConfig(data, stream);
+
+      stream('\nLaunching gateway...\n');
+      gatewayManager.start().catch((err) => {
+        log.error('Gateway failed to start after setup:', err.message);
+        stream(`[gateway] start error: ${err.message}\n`);
+      });
+
+      stream('\n[setup] Complete. You can close this page and visit /admin to manage your gateway.\n');
+      return res.end();
+    } catch (err) {
+      log.error('OAuth setup failed:', err);
+      stream(`\n[setup] Internal error: ${err.message}\n`);
+      return res.end();
+    }
+  }
+
+  // ─── API-key flow: regular JSON response ──────────────────────────
+  try {
     const onboard = await runOpenclaw(onboardArgs);
     log.info(`Onboard exit=${onboard.code} configured=${await config.isAlreadyConfigured()}`);
 
@@ -118,92 +245,10 @@ setupRoutes.post('/save', async (req, res) => {
       });
     }
 
-    // ── 2. Post-onboard gateway config patches ───────────────────
     log.info('Onboard succeeded. Patching gateway config...');
+    await applyPostOnboardConfig(data, null);
 
-    await runConfigSet('gateway.controlUi.allowInsecureAuth', 'true');
-    if (OPENCLAW_GATEWAY_TOKEN) {
-      await runConfigSet('gateway.auth.token', OPENCLAW_GATEWAY_TOKEN);
-    }
-    await runConfigSetJson('gateway.trustedProxies', ['127.0.0.1', '::1']);
-    await runConfigSetJson('gateway.controlUi.allowedOrigins', ['*']);
-
-    // ── 3. Set model (if user provided one) ──────────────────────
-    if (data.model) {
-      log.info(`Setting model to ${data.model}...`);
-      await runModelsSet(data.model);
-    }
-
-    // ── 4. Channel configs ───────────────────────────────────────
-    if (data.telegramBotToken) {
-      await runConfigSetJson('channels.telegram', {
-        enabled: true,
-        botToken: data.telegramBotToken,
-        dmPolicy: data.telegramDmPolicy || 'pairing',
-        groupPolicy: 'open',
-        streaming: { mode: 'partial' },
-        ...(data.telegramAllowFrom
-          ? { allowFrom: data.telegramAllowFrom.split(/[,\n]/).map(s => s.trim()).filter(Boolean) }
-          : {}),
-        ...(data.telegramWebhookUrl
-          ? { webhookUrl: data.telegramWebhookUrl }
-          : {}),
-      });
-    }
-
-    if (data.discordBotToken) {
-      await runConfigSetJson('channels.discord', {
-        enabled: true,
-        token: data.discordBotToken,
-        groupPolicy: 'open',
-        dm: { policy: data.discordDmPolicy || 'pairing' },
-        ...(data.discordAllowFrom
-          ? { allowFrom: data.discordAllowFrom.split(/[,\n]/).map(s => s.trim()).filter(Boolean) }
-          : {}),
-      });
-    }
-
-    if (data.slackBotToken && data.slackAppToken) {
-      await runConfigSetJson('channels.slack', {
-        enabled: true,
-        botToken: data.slackBotToken,
-        appToken: data.slackAppToken,
-      });
-    }
-
-    if (data.googleChatServiceAccount) {
-      await runConfigSetJson('channels.googlechat', {
-        serviceAccount: data.googleChatServiceAccount,
-      });
-    }
-
-    if (data.mattermostUrl && data.mattermostToken) {
-      await runConfigSetJson('channels.mattermost', {
-        url: data.mattermostUrl,
-        token: data.mattermostToken,
-        ...(data.mattermostTeam ? { team: data.mattermostTeam } : {}),
-      });
-    }
-
-    // ── 5. Session config ────────────────────────────────────────
-    if (data.sessionScope) {
-      const session = {
-        dmScope: data.sessionScope,
-      };
-      if (data.sessionResetMode && data.sessionResetMode !== 'off') {
-        session.reset = {
-          mode: data.sessionResetMode,
-          ...(data.sessionResetHour
-            ? { atHour: parseInt(data.sessionResetHour, 10) }
-            : {}),
-        };
-      }
-      await runConfigSetJson('session', session);
-    }
-
-    // ── 6. Launch the gateway ────────────────────────────────────
     log.info('Config complete. Launching OpenClaw gateway...');
-
     gatewayManager.start().catch((err) => {
       log.error('Gateway failed to start after setup:', err.message);
     });
