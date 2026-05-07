@@ -771,6 +771,10 @@ document.querySelectorAll('select[id$="DmPolicy"]').forEach(sel => {
 function collectForm() {
   const data = {};
   document.querySelectorAll('input[name], select[name], textarea[name]').forEach(el => {
+    // Radio + checkbox groups: only take the checked one's value, otherwise
+    // every named radio overwrites the previous one in DOM order and the
+    // last-defined value always wins (regardless of user selection).
+    if ((el.type === 'radio' || el.type === 'checkbox') && !el.checked) return;
     data[el.name] = el.value;
   });
   return data;
