@@ -48,9 +48,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install openclaw globally — needs git for transitive deps with GitHub URLs
+# Install openclaw globally — needs git for transitive deps with GitHub URLs.
+#
+# Compatibility floor: MIN below is a HARD-CODED constant (deliberately NOT an
+# ARG), so no Railway variable can lower or bypass it. If the deployer's
+# OPENCLAW_VERSION is a concrete release older than MIN, we install MIN instead;
+# tags ("latest") and pre-releases are installed verbatim. The decision is
+# recorded in /app/openclaw-build-info.json so the setup/admin UI can explain
+# an auto-bump. Keep MIN in sync with MIN_VERSION in src/utils/version.js
+# (and the ARG OPENCLAW_VERSION default above).
 RUN printf '[url "https://github.com/"]\n\tinsteadOf = ssh://git@github.com/\n\tinsteadOf = git@github.com:\n' > /root/.gitconfig \
-    && npm install -g openclaw@${OPENCLAW_VERSION}
+    && MIN="2026.6.6" \
+    && REQ="${OPENCLAW_VERSION:-$MIN}" && EFF="$REQ" && BUMPED=false \
+    && if echo "$REQ" | grep -Eq '^[0-9]{4}\.[0-9]+\.[0-9]+$' && dpkg --compare-versions "$REQ" lt "$MIN"; then \
+         echo "WARNING: OPENCLAW_VERSION=$REQ is below the compatibility floor $MIN — installing $MIN instead"; \
+         EFF="$MIN"; BUMPED=true; \
+       fi \
+    && npm install -g openclaw@"$EFF" \
+    && mkdir -p /app \
+    && printf '{"requested":"%s","effective":"%s","min":"%s","bumped":%s}\n' "$REQ" "$EFF" "$MIN" "$BUMPED" > /app/openclaw-build-info.json \
+    && echo "openclaw build-info: $(cat /app/openclaw-build-info.json)"
 
 WORKDIR /app
 

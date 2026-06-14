@@ -193,7 +193,7 @@
   <p class="subtitle">Configure your personal AI assistant. Select a model provider and optionally add messaging channels.</p>
 </div>
 
-<div style="max-width:760px; margin:0 auto 24px;
+<div id="version-banner" style="max-width:760px; margin:0 auto 24px;
             background:rgba(232,93,38,0.06); border:1px solid rgba(232,93,38,0.4);
             border-radius:10px; padding:14px 18px;
             color:var(--text); font-family:var(--font-mono); font-size:12px; line-height:1.6;">
@@ -1081,12 +1081,44 @@ function escHtml(str) {
 
 }
 
+// ── Version compatibility banner ──────────────────────────────────
+// Driven by /api/status `version` info. Surfaces an auto-bump (the build
+// installed the compatibility floor because the pinned OPENCLAW_VERSION was
+// too old) or a still-too-old running version.
+function renderVersionBanner(v) {
+  if (!v) return;
+  var el = document.getElementById('version-banner');
+  if (!el) return;
+  var min = escHtml(v.min || '2026.6.6');
+  var installed = escHtml(v.installed || 'unknown');
+  if (v.bumped) {
+    el.style.borderColor = 'var(--accent)';
+    el.style.background = 'rgba(232,93,38,0.10)';
+    el.innerHTML = '<strong style="color:var(--accent2)">⚠ OpenClaw version auto-bumped for compatibility.</strong> '
+      + 'You set <code>OPENCLAW_VERSION = ' + escHtml(v.requested || '?') + '</code>, but this template is built for OpenClaw <code>' + min + '</code> and newer. '
+      + 'It was automatically installed as <code>' + installed + '</code> so setup keeps working. '
+      + 'To pin a different (newer) version, set <code>OPENCLAW_VERSION</code> to <code>' + min + '</code> or higher in your Railway variables and redeploy.';
+  } else if (v.belowMin) {
+    el.style.borderColor = 'var(--red)';
+    el.style.background = 'rgba(248,81,73,0.08)';
+    el.innerHTML = '<strong style="color:var(--red)">⚠ Unsupported OpenClaw version.</strong> '
+      + 'This deployment is running OpenClaw <code>' + installed + '</code>, below the minimum supported (<code>' + min + '</code>). Setup may fail. '
+      + 'Redeploy to auto-install <code>' + min + '</code>, or set <code>OPENCLAW_VERSION</code> &ge; <code>' + min + '</code> in your Railway build args.';
+  } else {
+    el.style.borderColor = 'var(--border)';
+    el.style.background = 'var(--surface)';
+    el.innerHTML = '<strong style="color:var(--accent2)">✔ OpenClaw ' + installed + '.</strong> '
+      + 'This template is built for OpenClaw <code>' + min + '</code> and verified against it.';
+  }
+}
+
 // ── On load: check if already running ────────────────────────────
 (async function checkAlreadyRunning() {
   try {
     var res = await fetch('/api/status');
     if (res.ok) {
       var data = await res.json();
+      renderVersionBanner(data.version);
       if (data.state === 'running') {
         document.getElementById('btn-launch').textContent = '\u2713 OpenClaw is already running';
         document.getElementById('btn-launch').disabled = true;

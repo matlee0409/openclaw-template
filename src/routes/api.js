@@ -27,6 +27,7 @@ import { OPENCLAW_GATEWAY_TOKEN } from '../config/index.js';
 import { gatewayManager } from '../services/gatewayManager.js';
 import { pairingService } from '../services/pairingService.js';
 import { getActiveSessionCount } from '../services/terminalService.js';
+import { getVersionInfo } from '../utils/version.js';
 import { requireAdminAuth } from '../middleware/auth.js';
 import { log } from '../utils/log.js';
 
@@ -53,6 +54,7 @@ apiRoutes.get('/status', async (req, res) => {
     terminalSessions: getActiveSessionCount(),
     gatewayToken: OPENCLAW_GATEWAY_TOKEN || null,
     aiProvider,
+    version: getVersionInfo(),
     ts: new Date().toISOString(),
   });
 });
