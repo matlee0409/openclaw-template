@@ -33,7 +33,7 @@ FROM node:22-bookworm-slim
 #   - 2026.6.x renamed the OpenAI OAuth choice openai-codex-device-code ->
 #     openai-device-code, and bumped the Node engine floor to >=22.19.0
 #     (satisfied by node:22-bookworm-slim below).
-ARG OPENCLAW_VERSION=2026.6.6
+ARG OPENCLAW_VERSION=latest
 
 # Runtime deps:
 # - bash: required by node-pty for the shell
