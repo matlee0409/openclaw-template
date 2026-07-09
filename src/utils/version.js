@@ -19,7 +19,7 @@ import { log } from './log.js';
 
 // Minimum OpenClaw version this template's code is compatible with.
 // Keep in sync with ARG OPENCLAW_MIN_VERSION in the Dockerfile.
-export const MIN_VERSION = '2026.6.6';
+export const MIN_VERSION = '2026.6.11';
 
 let _installed;       // cached parsed version string | null
 let _versionInfo;     // cached getVersionInfo() result

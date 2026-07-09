@@ -58,7 +58,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # an auto-bump. Keep MIN in sync with MIN_VERSION in src/utils/version.js
 # (and the ARG OPENCLAW_VERSION default above).
 RUN printf '[url "https://github.com/"]\n\tinsteadOf = ssh://git@github.com/\n\tinsteadOf = git@github.com:\n' > /root/.gitconfig \
-    && MIN="2026.6.6" \
+    && MIN="2026.6.11" \
     && REQ="${OPENCLAW_VERSION:-$MIN}" && EFF="$REQ" && BUMPED=false \
     && if echo "$REQ" | grep -Eq '^[0-9]{4}\.[0-9]+\.[0-9]+$' && dpkg --compare-versions "$REQ" lt "$MIN"; then \
          echo "WARNING: OPENCLAW_VERSION=$REQ is below the compatibility floor $MIN — installing $MIN instead"; \
