@@ -559,6 +559,9 @@
     <div class="nav-item" onclick="exportBackup()">
       <span class="nav-icon">⤓</span> Download Backup
     </div>
+    <div class="nav-item" data-panel="import" onclick="navigate('import')">
+      <span class="nav-icon">⤒</span> GitHub Import
+    </div>
 
     <div class="nav-group-label" style="margin-top:8px">Danger</div>
     <div class="nav-item" style="color: var(--yellow);" onclick="resetConfig()">
@@ -813,6 +816,47 @@
               github.com/praveen-ks-2001/openclaw-railway/issues
             </a>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- GITHUB IMPORT -->
+    <div class="panel" id="panel-import">
+      <div class="panel-header">
+        <div class="panel-title">GitHub Import</div>
+        <div style="font-size:12px; color:var(--text-dim); font-family:var(--font-mono);">
+          Restore memories, workspace files and folders from a GitHub repo
+        </div>
+      </div>
+      <div class="panel-body">
+        <div style="max-width:580px;">
+
+          <div style="background:var(--surface); border:1px solid var(--yellow); border-radius:10px; padding:14px 18px; margin-bottom:24px; font-size:13px; color:var(--yellow); line-height:1.6;">
+            ⚠ This will overwrite any local files that share a name with files in the repo.
+            Existing files not tracked in the repo are left untouched.
+            The gateway will need a restart to pick up the restored config.
+          </div>
+
+          <div class="field" style="margin-bottom:16px;">
+            <label for="imp-token" style="display:block; font-size:12px; font-family:var(--font-mono); color:var(--text-dim); margin-bottom:6px; letter-spacing:0.04em; text-transform:uppercase;">GitHub Token</label>
+            <input type="password" id="imp-token" placeholder="ghp_… or github_pat_…" autocomplete="off"
+              style="width:100%; background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:10px 14px; color:var(--text); font-family:var(--font-mono); font-size:13px; box-sizing:border-box;">
+          </div>
+
+          <div class="field" style="margin-bottom:16px;">
+            <label for="imp-repo" style="display:block; font-size:12px; font-family:var(--font-mono); color:var(--text-dim); margin-bottom:6px; letter-spacing:0.04em; text-transform:uppercase;">Repository <span style="text-transform:none; color:var(--text-dim);">(owner/name)</span></label>
+            <input type="text" id="imp-repo" placeholder="your-username/openclaw-backup" autocomplete="off"
+              style="width:100%; background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:10px 14px; color:var(--text); font-family:var(--font-mono); font-size:13px; box-sizing:border-box;">
+          </div>
+
+          <div style="display:flex; gap:10px; align-items:center; margin-bottom:20px;">
+            <button class="btn primary" id="btn-import" onclick="runGithubImport()">⤒ Import from GitHub</button>
+            <span id="imp-spinner" style="display:none; font-family:var(--font-mono); font-size:12px; color:var(--text-dim);">Working…</span>
+          </div>
+
+          <!-- Progress log -->
+          <div id="imp-log" style="display:none; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px 18px; font-family:var(--font-mono); font-size:12px; line-height:1.8; white-space:pre-wrap; color:var(--text-dim); max-height:280px; overflow-y:auto;"></div>
+
         </div>
       </div>
     </div>
@@ -1526,6 +1570,85 @@ function renderVersionBanner(v) {
 // ─────────────────────────────────────────────────────────────────
 // Backup & Reset
 // ─────────────────────────────────────────────────────────────────
+// ── GitHub Import ─────────────────────────────────────────────────
+
+async function runGithubImport() {
+  const token  = (document.getElementById('imp-token').value  || '').trim();
+  const repo   = (document.getElementById('imp-repo').value   || '').trim();
+  const branch = (document.getElementById('imp-branch').value || 'main').trim();
+
+  if (!token || !repo) { toast('Enter a GitHub token and repo first', 'err'); return; }
+
+  const btn     = document.getElementById('btn-import');
+  const spinner = document.getElementById('imp-spinner');
+  const log     = document.getElementById('imp-log');
+
+  btn.disabled  = true;
+  spinner.style.display = '';
+  log.style.display = '';
+  log.textContent = '';
+
+  const appendLog = (msg, color) => {
+    const line = document.createElement('div');
+    if (color) line.style.color = color;
+    line.textContent = msg;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+  };
+
+  try {
+    const res = await fetch('/api/github/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ githubToken: token, githubRepo: repo }),
+    });
+
+    if (!res.ok && res.headers.get('content-type')?.includes('json')) {
+      const err = await res.json();
+      appendLog('\u2717 ' + (err.error || 'Request failed'), 'var(--red)');
+      toast('Import failed', 'err');
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split('\n\n');
+      buf = parts.pop();
+      for (const part of parts) {
+        const line = part.replace(/^data:\s*/, '').trim();
+        if (!line) continue;
+        try {
+          const ev = JSON.parse(line);
+          if (ev.type === 'progress') {
+            appendLog(ev.message);
+          } else if (ev.type === 'done') {
+            if (ev.ok) {
+              appendLog('\u2713 ' + (ev.files?.length || 0) + ' file(s) restored successfully', 'var(--green)');
+              toast('Import complete — restart the gateway to apply changes', 'ok');
+            } else {
+              appendLog('\u2717 ' + (ev.error || 'Import failed'), 'var(--red)');
+              toast('Import failed: ' + (ev.error || ''), 'err');
+            }
+          }
+        } catch {}
+      }
+    }
+  } catch (e) {
+    appendLog('\u2717 ' + e.message, 'var(--red)');
+    toast('Import failed: ' + e.message, 'err');
+  } finally {
+    btn.disabled  = false;
+    spinner.style.display = 'none';
+  }
+}
+
 async function exportBackup() {
   toast('Preparing backup…', 'ok');
   try {

@@ -15,6 +15,7 @@ import {
   gitSync,
   gitSyncStatus,
   resolveRepoPath,
+  importFromGithub,
 } from '../services/gitSyncService.js';
 import { log } from '../utils/log.js';
 
@@ -74,5 +75,49 @@ githubRoutes.post('/sync', async (req, res) => {
   } catch (err) {
     log.error('[github] manual sync error:', err.message);
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── POST /api/github/import ───────────────────────────────────────
+// Restore all data from a GitHub repo into OPENCLAW_HOME.
+// Streams Server-Sent Events so the UI can show live progress.
+
+githubRoutes.post('/import', async (req, res) => {
+  const githubToken = String(req.body?.githubToken || '').trim();
+  const repoInput   = String(req.body?.githubRepo  || '').trim();
+
+  if (!githubToken || !repoInput) {
+    return res.status(400).json({ ok: false, error: 'githubToken and githubRepo are required' });
+  }
+
+  const repoPath = resolveRepoPath(repoInput);
+  if (!repoPath.includes('/')) {
+    return res.status(400).json({ ok: false, error: 'Repo must be in owner/name format' });
+  }
+
+  // Stream progress via SSE
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const send = (type, payload) => {
+    res.write(`data: ${JSON.stringify({ type, ...payload })}\n\n`);
+  };
+
+  const onProgress = (msg) => send('progress', { message: msg });
+
+  try {
+    const result = await importFromGithub({ githubToken, repoPath, onProgress });
+    if (result.ok) {
+      send('done', { ok: true, files: result.files });
+    } else {
+      send('done', { ok: false, error: result.error });
+    }
+  } catch (err) {
+    log.error('[github] import error:', err.message);
+    send('done', { ok: false, error: err.message });
+  } finally {
+    res.end();
   }
 });

@@ -426,6 +426,129 @@ export function stopAutoSync() {
 
 // ── Helpers ──────────────────────────────────────────────────────
 
+// ── importFromGithub ─────────────────────────────────────────────
+
+/**
+ * Full restore of all tracked files from a GitHub repo into OPENCLAW_HOME.
+ *
+ * Strategy:
+ *  1. Clone the remote into a temp dir (depth=1 for speed)
+ *  2. Walk + copy every file in the clone (skipping .git/) into OPENCLAW_HOME
+ *  3. Wire up / update the local git remote so future auto-syncs push back
+ *  4. Clean up temp dir
+ *
+ * Emits progress via the optional `onProgress(msg)` callback.
+ */
+export async function importFromGithub({ githubToken, repoPath, onProgress = null }) {
+  // Branch is intentionally locked to 'main' — the auto-sync service
+  // always pulls from and pushes to origin/main. Supporting other branches
+  // here would silently break future hourly syncs.
+  const branch = 'main';
+  const originUrl = `https://github.com/${repoPath}.git`;
+  const tmpDir = path.join(os.tmpdir(), `ocimport-${process.pid}-${Date.now()}`);
+  const askPassPath = path.join(os.tmpdir(), `ocimport-askpass-${process.pid}.sh`);
+
+  const emit = (msg) => {
+    log.info(`[git-import] ${msg}`);
+    if (onProgress) onProgress(msg);
+  };
+
+  try {
+    // Validate token + repo first
+    emit('Verifying token and repository access…');
+    const verify = await verifyGithubRepo({ githubToken, repoPath, mode: 'existing' });
+    if (!verify.ok) return { ok: false, error: verify.error };
+    if (verify.repoIsEmpty) return { ok: false, error: `Repository "${repoPath}" exists but has no data to restore.` };
+
+    emit(`Cloning ${repoPath} (branch: ${branch})…`);
+    writeAskPass(askPassPath, githubToken);
+    const cloneEnv = { ...makeGitEnv(githubToken), GIT_ASKPASS: askPassPath };
+
+    // Clone into temp dir
+    try {
+      execFileSync('git', ['clone', '--depth=1', '--branch', branch, originUrl, tmpDir], {
+        stdio: 'pipe',
+        env: cloneEnv,
+      });
+    } catch (e) {
+      const msg = String(e.stderr || e.message || '').replace(/ghp_[^\s"]+/g, '***').replace(/github_pat_[^\s"]+/g, '***').trim().slice(0, 300);
+      return { ok: false, error: `Clone failed: ${msg}` };
+    }
+
+    // Walk clone and copy all files (skip .git/)
+    emit('Restoring files to data directory…');
+    await fsp.mkdir(OPENCLAW_HOME, { recursive: true });
+    const copied = [];
+    await copyDir(tmpDir, OPENCLAW_HOME, '.git', copied, emit);
+
+    // Validate that at least one expected OpenClaw payload was restored
+    const hasConfig    = fs.existsSync(OPENCLAW_CONFIG_PATH);
+    const hasWorkspace = fs.existsSync(path.join(OPENCLAW_HOME, 'workspace'));
+    if (!hasConfig && !hasWorkspace) {
+      return {
+        ok: false,
+        error: `Repository "${repoPath}" does not appear to contain OpenClaw data — no openclaw.json or workspace/ directory was found. Make sure this is a repo that was previously backed up by OpenClaw Railway.`,
+      };
+    }
+
+    emit(`Restored ${copied.length} file(s): ${copied.slice(0, 8).join(', ')}${copied.length > 8 ? ' …' : ''}`);
+
+    // Wire up git remote for future auto-syncs
+    const gitDir = path.join(OPENCLAW_HOME, '.git');
+    if (fs.existsSync(gitDir)) {
+      emit('Updating git remote…');
+      try {
+        runGit(['remote', 'set-url', 'origin', originUrl]);
+        runGit(['config', 'user.name', 'OpenClaw Railway']);
+        runGit(['config', 'user.email', 'agent@openclaw.railway']);
+        runGit(['fetch', '--quiet', '--depth=1', 'origin', branch], { askPassPath, githubToken });
+        runGit(['branch', '--set-upstream-to', `origin/${branch}`, branch]);
+      } catch (e) {
+        emit(`Warning: could not update git remote: ${e.message?.slice(0, 120)}`);
+      }
+    } else {
+      emit('Initializing git repo for future syncs…');
+      try {
+        runGit(['init', '-b', 'main'], { cwd: OPENCLAW_HOME });
+        runGit(['remote', 'add', 'origin', originUrl]);
+        runGit(['config', 'user.name', 'OpenClaw Railway']);
+        runGit(['config', 'user.email', 'agent@openclaw.railway']);
+        runGit(['fetch', '--quiet', '--depth=1', 'origin', branch], { askPassPath, githubToken });
+        runGit(['branch', '--set-upstream-to', `origin/${branch}`, branch]);
+      } catch (e) {
+        emit(`Warning: git init skipped: ${e.message?.slice(0, 120)}`);
+      }
+    }
+
+    emit('Import complete ✓');
+    return { ok: true, files: copied };
+  } catch (e) {
+    const sanitized = String(e.message || '').replace(/ghp_[^\s"]+/g, '***').replace(/github_pat_[^\s"]+/g, '***');
+    log.error(`[git-import] Failed: ${sanitized}`);
+    return { ok: false, error: sanitized };
+  } finally {
+    try { fs.rmSync(askPassPath, { force: true }); } catch {}
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
+/** Recursively copy srcDir → destDir, skipping `skip` entry at the root level. */
+async function copyDir(src, dest, skip, collected = [], emit = null) {
+  const entries = await fsp.readdir(src, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.name === skip) continue;
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      await fsp.mkdir(destPath, { recursive: true });
+      await copyDir(srcPath, destPath, null, collected, emit);
+    } else {
+      await fsp.copyFile(srcPath, destPath);
+      collected.push(entry.name);
+    }
+  }
+}
+
 export function resolveRepoPath(value) {
   return String(value || '')
     .trim()
