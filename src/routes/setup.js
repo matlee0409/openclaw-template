@@ -14,6 +14,7 @@ import { createReadStream } from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { config, DATA_DIR, OPENCLAW_HOME, OPENCLAW_GATEWAY_TOKEN, WRAPPER_ADMIN_PASSWORD, OLLAMA_BASE_URL, OPENCLAW_ENTRY, OPENCLAW_NODE } from '../config/index.js';
+import { ensureGithubRepoExists, initGitRepo, startAutoSync, gitSync, resolveRepoPath } from '../services/gitSyncService.js';
 import { gatewayManager } from '../services/gatewayManager.js';
 import {
   buildOnboardArgs, runOpenclaw, runOpenclawPty,
@@ -26,6 +27,36 @@ import { log } from '../utils/log.js';
 const execFileAsync = promisify(execFile);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Persist GITHUB_TOKEN and GITHUB_WORKSPACE_REPO to the openclaw .env file
+ * so they survive container restarts and are available to the auto-sync service.
+ */
+async function saveGithubEnvVars(githubToken, repoPath) {
+  let lines = [];
+  try {
+    const raw = await fs.readFile(config.OPENCLAW_ENV_PATH, 'utf8');
+    lines = raw.split('\n').filter((l) => l.trim() && !l.trim().startsWith('#'));
+  } catch { /* file may not exist yet */ }
+
+  const envMap = new Map(
+    lines
+      .map((l) => { const eq = l.indexOf('='); return eq > 0 ? [l.slice(0, eq), l.slice(eq + 1)] : null; })
+      .filter(Boolean),
+  );
+
+  envMap.set('GITHUB_TOKEN', githubToken);
+  envMap.set('GITHUB_WORKSPACE_REPO', repoPath);
+
+  // Update process.env so the current process picks them up immediately
+  process.env.GITHUB_TOKEN = githubToken;
+  process.env.GITHUB_WORKSPACE_REPO = repoPath;
+
+  const content = [...envMap.entries()].map(([k, v]) => `${k}=${v}`).join('\n') + '\n';
+  await fs.mkdir(OPENCLAW_HOME, { recursive: true });
+  await fs.writeFile(config.OPENCLAW_ENV_PATH, content, 'utf8');
+  log.info('[git-sync] GitHub credentials saved to env file');
+}
 
 export const setupRoutes = Router();
 
@@ -222,6 +253,30 @@ setupRoutes.post('/save', async (req, res) => {
         stream(`[gateway] start error: ${err.message}\n`);
       });
 
+      // ── GitHub backup setup (optional, OAuth flow) ───────────────
+      const ghToken = String(data.githubToken || '').trim();
+      const ghRepoInput = String(data.githubRepo || '').trim();
+      if (ghToken && ghRepoInput) {
+        const ghRepoPath = resolveRepoPath(ghRepoInput);
+        const ghRepoExists = data.githubRepoExists === '1';
+        const ghRepoIsEmpty = data.githubRepoIsEmpty !== '0' && data.githubRepoIsEmpty !== 'false';
+        const ghMode = ghRepoExists && !ghRepoIsEmpty ? 'existing' : 'new';
+        stream(`\n[git-sync] Setting up GitHub backup for ${ghRepoPath} (mode=${ghMode})...\n`);
+        try {
+          await saveGithubEnvVars(ghToken, ghRepoPath);
+          const repoResult = await ensureGithubRepoExists({ githubToken: ghToken, repoPath: ghRepoPath, mode: ghMode });
+          if (repoResult.ok) {
+            await initGitRepo({ githubToken: ghToken, repoPath: ghRepoPath, repoIsEmpty: repoResult.repoIsEmpty ?? ghRepoIsEmpty });
+            startAutoSync();
+            stream('[git-sync] GitHub backup configured.\n');
+          } else {
+            stream(`[git-sync] Warning: ${repoResult.error}\n`);
+          }
+        } catch (e) {
+          stream(`[git-sync] Warning: GitHub setup failed: ${e.message}\n`);
+        }
+      }
+
       stream('\n[setup] Complete. You can close this page and visit /admin to manage your gateway.\n');
       return res.end();
     } catch (err) {
@@ -252,6 +307,37 @@ setupRoutes.post('/save', async (req, res) => {
     gatewayManager.start().catch((err) => {
       log.error('Gateway failed to start after setup:', err.message);
     });
+
+    // ── GitHub backup setup (optional) ────────────────────────────
+    const githubToken = String(data.githubToken || '').trim();
+    const githubRepoInput = String(data.githubRepo || '').trim();
+    if (githubToken && githubRepoInput) {
+      const repoPath = resolveRepoPath(githubRepoInput);
+      // repoExists/repoIsEmpty come from the verify step (hidden form fields)
+      const repoExists = data.githubRepoExists === '1';
+      const repoIsEmpty = data.githubRepoIsEmpty !== '0' && data.githubRepoIsEmpty !== 'false';
+      const repoMode = repoExists && !repoIsEmpty ? 'existing' : 'new';
+      log.info(`[git-sync] Setting up GitHub backup for ${repoPath} (mode=${repoMode})...`);
+      setImmediate(async () => {
+        try {
+          // Persist to env file so it survives container restarts
+          await saveGithubEnvVars(githubToken, repoPath);
+          // Ensure the remote repo exists (or verify we can access it)
+          const repoResult = await ensureGithubRepoExists({ githubToken, repoPath, mode: repoMode });
+          if (!repoResult.ok) {
+            log.error(`[git-sync] Repo setup failed: ${repoResult.error}`);
+            return;
+          }
+          // Init local git repo and push initial state (or fetch existing)
+          await initGitRepo({ githubToken, repoPath, repoIsEmpty: repoResult.repoIsEmpty ?? repoIsEmpty });
+          // Start hourly auto-sync
+          startAutoSync();
+          log.info('[git-sync] GitHub backup configured and active');
+        } catch (e) {
+          log.error('[git-sync] GitHub setup error:', e.message);
+        }
+      });
+    }
 
     res.json({ ok: true, message: 'Config saved. Gateway launching...' });
   } catch (err) {

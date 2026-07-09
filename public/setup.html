@@ -473,6 +473,42 @@
   </div>
 </div>
 
+<!-- Card 4: GitHub Backup (optional) -->
+<div class="card">
+  <div class="card-title">&#x1F4BE; GitHub Backup <span class="required-note">optional</span></div>
+
+  <p style="font-size:13px; color:var(--text-dim); margin-bottom:18px; line-height:1.6;">
+    Automatically back up your OpenClaw data (<code style="font-size:12px">/data/.openclaw</code>) to a private GitHub repo every hour.
+    Your config, workspace, and skills are pushed to GitHub, so you can restore them after a redeploy or volume loss.
+  </p>
+
+  <div class="field">
+    <label for="githubToken">GitHub Personal Access Token <span class="hint">optional</span></label>
+    <input type="password" id="githubToken" name="githubToken" placeholder="ghp_... or github_pat_..." autocomplete="off" oninput="onGithubInput()">
+    <div class="field-hint">
+      Create a <strong>classic PAT</strong> with the <code>repo</code> scope at
+      <a href="https://github.com/settings/tokens/new" target="_blank" rel="noopener">github.com/settings/tokens</a>.
+      Fine-grained PATs need Contents (read/write) + Metadata (read) permissions.
+    </div>
+  </div>
+
+  <div class="field">
+    <label for="githubRepo">Repository <span class="hint">owner/name</span></label>
+    <div style="display:flex; gap:8px;">
+      <input type="text" id="githubRepo" name="githubRepo" placeholder="your-username/openclaw-backup" autocomplete="off" oninput="onGithubInput()" style="flex:1">
+      <button type="button" id="btn-gh-verify" class="btn-sm" onclick="verifyGithubRepo()" disabled>Verify</button>
+    </div>
+    <div class="field-hint">
+      A <strong>new private repo</strong> will be created automatically if it doesn't exist yet.
+      To use an existing repo, enter its full name &mdash; existing data will be preserved.
+    </div>
+    <div id="gh-verify-status" style="display:none; margin-top:8px; font-family:var(--font-mono); font-size:12px;"></div>
+    <!-- Hidden fields populated by verifyGithubRepo() — sent with the form body -->
+    <input type="hidden" id="githubRepoExists" name="githubRepoExists" value="">
+    <input type="hidden" id="githubRepoIsEmpty" name="githubRepoIsEmpty" value="">
+  </div>
+</div>
+
 <!-- Channel Pairing (shown after gateway starts if pairing channels configured) -->
 <div class="card" id="pairing-step" style="display:none">
   <div class="card-title">
@@ -1079,6 +1115,65 @@ async function pollUntilRunning(attempts) {
 function escHtml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+}
+
+// ── GitHub backup helpers ─────────────────────────────────────────
+
+function onGithubInput() {
+  var token = (document.getElementById('githubToken').value || '').trim();
+  var repo  = (document.getElementById('githubRepo').value || '').trim();
+  var btn   = document.getElementById('btn-gh-verify');
+  btn.disabled = !(token && repo);
+  // Reset status when user edits
+  var s = document.getElementById('gh-verify-status');
+  s.style.display = 'none';
+  s.textContent = '';
+}
+
+async function verifyGithubRepo() {
+  var token  = (document.getElementById('githubToken').value || '').trim();
+  var repo   = (document.getElementById('githubRepo').value || '').trim();
+  var status = document.getElementById('gh-verify-status');
+  var btn    = document.getElementById('btn-gh-verify');
+
+  if (!token || !repo) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Verifying\u2026';
+  status.style.display = '';
+  status.style.color = 'var(--text-dim)';
+  status.innerHTML = '<span class="spinner"></span> Checking token &amp; repo\u2026';
+
+  try {
+    var res = await fetch('/api/github/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ githubToken: token, githubRepo: repo, mode: 'new' }),
+    });
+    var data = await res.json();
+    if (data.ok) {
+      // Store verification state in hidden fields so it's sent with the form
+      document.getElementById('githubRepoExists').value = data.repoExists ? '1' : '';
+      document.getElementById('githubRepoIsEmpty').value = data.repoIsEmpty !== false ? '1' : '';
+      status.style.color = 'var(--green)';
+      if (data.repoExists && !data.repoIsEmpty) {
+        status.textContent = '\u2713 Existing repo found — your backed-up data will be restored on launch';
+      } else if (data.repoExists) {
+        status.textContent = '\u2713 Repo exists and is ready';
+      } else {
+        status.textContent = '\u2713 Token valid — a new private repo will be created on launch';
+      }
+    } else {
+      status.style.color = 'var(--red)';
+      status.textContent = '\u2717 ' + (data.error || 'Verification failed');
+    }
+  } catch (err) {
+    status.style.color = 'var(--red)';
+    status.textContent = '\u2717 ' + err.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Verify';
+  }
 }
 
 // ── Version compatibility banner ──────────────────────────────────

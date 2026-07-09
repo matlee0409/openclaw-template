@@ -22,11 +22,13 @@ import { pairingService, probeDeviceBootstrapSdk } from './services/pairingServi
 import { attachTerminalWebSocket, terminalWss } from './services/terminalService.js';
 import { setupRoutes } from './routes/setup.js';
 import { apiRoutes } from './routes/api.js';
+import { githubRoutes } from './routes/github.js';
 import { proxyMiddleware } from './middleware/proxy.js';
 import { requestLogger } from './middleware/logger.js';
 import { requireAdminAuth, setAuthCookie, clearAuthCookie } from './middleware/auth.js';
 import { ensureDataDir } from './utils/fs.js';
 import { log } from './utils/log.js';
+import { startAutoSync, gitSync, resolveRepoPath } from './services/gitSyncService.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -61,6 +63,10 @@ async function main() {
 
   // Static files for wrapper UI (setup/admin pages)
   // ── Routes ─────────────────────────────────────────────────────
+
+  // GitHub backup API — mounted BEFORE /api so /api/github/verify is
+  // reachable pre-setup without hitting apiRoutes' global requireAdminAuth.
+  app.use('/api/github', githubRoutes);
 
   // Internal management API — always available
   app.use('/api', apiRoutes);
@@ -206,6 +212,22 @@ ${req.query.err ? '<p class="err">Incorrect password</p>' : ''}
     }
   } else {
     log.info('No config found — serving Setup UI at /setup');
+  }
+
+  // ── GitHub auto-sync — start if credentials are configured ─────
+  const ghToken = String(process.env.GITHUB_TOKEN || '').trim();
+  const ghRepo = String(process.env.GITHUB_WORKSPACE_REPO || '').trim();
+  if (ghToken && ghRepo) {
+    log.info(`[git-sync] GitHub backup configured for ${resolveRepoPath(ghRepo)}`);
+    startAutoSync();
+    // Run an initial sync shortly after boot (non-blocking)
+    setTimeout(() => {
+      gitSync(`chore: boot sync ${new Date().toISOString()}`).catch((e) => {
+        log.error('[git-sync] Boot sync failed:', e.message);
+      });
+    }, 15_000);
+  } else {
+    log.info('[git-sync] No GitHub credentials — backup disabled (set GITHUB_TOKEN + GITHUB_WORKSPACE_REPO)');
   }
 
   // ── Graceful shutdown ──────────────────────────────────────────

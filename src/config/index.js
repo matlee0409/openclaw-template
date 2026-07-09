@@ -39,6 +39,11 @@ export const OPENCLAW_GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN || null
 // Set OLLAMA_BASE_URL in Railway env vars (e.g. http://ollama.railway.internal:11434).
 export const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || null;
 
+// GitHub backup: personal access token + target repo (owner/name).
+// Set GITHUB_TOKEN and GITHUB_WORKSPACE_REPO in Railway env vars.
+export const GITHUB_TOKEN = process.env.GITHUB_TOKEN || null;
+export const GITHUB_WORKSPACE_REPO = process.env.GITHUB_WORKSPACE_REPO || null;
+
 // Path to openclaw's entry.js — invoking via `node entry.js` is more reliable
 // than the bin wrapper (avoids env-detection quirks in containers and lets us
 // load openclaw/plugin-sdk/device-bootstrap via createRequire from the same path).
@@ -65,6 +70,8 @@ export const config = {
   PORT,
   WRAPPER_ADMIN_PASSWORD,
   OPENCLAW_GATEWAY_TOKEN,
+  GITHUB_TOKEN,
+  GITHUB_WORKSPACE_REPO,
 
   async isAlreadyConfigured() {
     try {
