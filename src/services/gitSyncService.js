@@ -532,19 +532,21 @@ export async function importFromGithub({ githubToken, repoPath, onProgress = nul
   }
 }
 
-/** Recursively copy srcDir → destDir, skipping `skip` entry at the root level. */
-async function copyDir(src, dest, skip, collected = [], emit = null) {
+/** Recursively copy srcDir → destDir, skipping `skip` name at the root level.
+ *  Tracks relative paths (e.g. "workspace/memories/chat.md") in `collected`. */
+async function copyDir(src, dest, skip, collected = [], emit = null, prefix = '') {
   const entries = await fsp.readdir(src, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.name === skip) continue;
-    const srcPath = path.join(src, entry.name);
+    const srcPath  = path.join(src,  entry.name);
     const destPath = path.join(dest, entry.name);
+    const relPath  = prefix ? `${prefix}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
       await fsp.mkdir(destPath, { recursive: true });
-      await copyDir(srcPath, destPath, null, collected, emit);
+      await copyDir(srcPath, destPath, null, collected, emit, relPath);
     } else {
       await fsp.copyFile(srcPath, destPath);
-      collected.push(entry.name);
+      collected.push(relPath);
     }
   }
 }

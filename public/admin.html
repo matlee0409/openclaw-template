@@ -881,6 +881,12 @@
           <!-- Progress log -->
           <div id="imp-log" style="display:none; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px 18px; font-family:var(--font-mono); font-size:12px; line-height:1.8; white-space:pre-wrap; color:var(--text-dim); max-height:280px; overflow-y:auto;"></div>
 
+          <!-- Restart prompt — shown after successful import -->
+          <div id="imp-restart-wrap" style="display:none; margin-top:16px; background:var(--surface); border:1px solid var(--accent); border-radius:10px; padding:14px 18px;">
+            <div style="font-size:13px; color:var(--text-dim); margin-bottom:10px;">Restart the gateway to apply the restored config and workspace.</div>
+            <button class="btn primary" id="btn-imp-restart" onclick="importRestartGateway()">↺ Restart Gateway Now</button>
+          </div>
+
         </div>
       </div>
     </div>
@@ -928,6 +934,7 @@ function navigate(panel) {
   }
   if (panel === 'pairing'  && !pairingInitialized)  initPairing();
   if (panel === 'config'   && !configLoaded)         loadConfig();
+  if (panel === 'import')                            prefillImportForm();
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1669,29 +1676,44 @@ function renderVersionBanner(v) {
 // ─────────────────────────────────────────────────────────────────
 // ── GitHub Import ─────────────────────────────────────────────────
 
+async function prefillImportForm() {
+  // If GitHub is already configured, pre-populate the repo field
+  // (token is never sent back to the browser, so we leave that blank)
+  try {
+    const gh = await fetch('/api/github/status', { credentials: 'same-origin' }).then(r => r.json());
+    if (gh && gh.repoPath) {
+      const repoEl = document.getElementById('imp-repo');
+      if (repoEl && !repoEl.value) repoEl.value = gh.repoPath;
+    }
+  } catch {}
+}
+
 async function runGithubImport() {
-  const token  = (document.getElementById('imp-token').value  || '').trim();
-  const repo   = (document.getElementById('imp-repo').value   || '').trim();
-  const branch = (document.getElementById('imp-branch').value || 'main').trim();
+  const token = (document.getElementById('imp-token').value || '').trim();
+  const repo  = (document.getElementById('imp-repo').value  || '').trim();
 
   if (!token || !repo) { toast('Enter a GitHub token and repo first', 'err'); return; }
 
-  const btn     = document.getElementById('btn-import');
-  const spinner = document.getElementById('imp-spinner');
-  const log     = document.getElementById('imp-log');
+  const btn         = document.getElementById('btn-import');
+  const spinner     = document.getElementById('imp-spinner');
+  const logEl       = document.getElementById('imp-log');
+  const restartWrap = document.getElementById('imp-restart-wrap');
 
-  btn.disabled  = true;
+  btn.disabled          = true;
   spinner.style.display = '';
-  log.style.display = '';
-  log.textContent = '';
+  logEl.style.display   = '';
+  logEl.textContent     = '';
+  restartWrap.style.display = 'none';
 
   const appendLog = (msg, color) => {
     const line = document.createElement('div');
     if (color) line.style.color = color;
     line.textContent = msg;
-    log.appendChild(line);
-    log.scrollTop = log.scrollHeight;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
   };
+
+  let importSucceeded = false;
 
   try {
     const res = await fetch('/api/github/import', {
@@ -1727,8 +1749,9 @@ async function runGithubImport() {
             appendLog(ev.message);
           } else if (ev.type === 'done') {
             if (ev.ok) {
-              appendLog('\u2713 ' + (ev.files?.length || 0) + ' file(s) restored successfully', 'var(--green)');
-              toast('Import complete — restart the gateway to apply changes', 'ok');
+              appendLog('\u2713 ' + (ev.files?.length || 0) + ' file(s) restored from ' + (ev.repoPath || repo), 'var(--green)');
+              appendLog('Restart the gateway below to apply the restored config.', 'var(--text-dim)');
+              importSucceeded = true;
             } else {
               appendLog('\u2717 ' + (ev.error || 'Import failed'), 'var(--red)');
               toast('Import failed: ' + (ev.error || ''), 'err');
@@ -1741,8 +1764,32 @@ async function runGithubImport() {
     appendLog('\u2717 ' + e.message, 'var(--red)');
     toast('Import failed: ' + e.message, 'err');
   } finally {
-    btn.disabled  = false;
+    btn.disabled          = false;
     spinner.style.display = 'none';
+    if (importSucceeded) {
+      restartWrap.style.display = '';
+      // Refresh the GitHub backup status card
+      try {
+        const gh = await fetch('/api/github/status', { credentials: 'same-origin' }).then(r => r.json());
+        renderGithubStatus(gh);
+      } catch {}
+    }
+  }
+}
+
+async function importRestartGateway() {
+  const btn = document.getElementById('btn-imp-restart');
+  btn.disabled = true;
+  btn.textContent = 'Restarting…';
+  try {
+    await api('/gateway/restart', { method: 'POST' });
+    toast('Gateway restarting…', 'ok');
+    setTimeout(refreshStatus, 2000);
+  } catch (e) {
+    toast('Restart failed: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '↺ Restart Gateway Now';
   }
 }
 

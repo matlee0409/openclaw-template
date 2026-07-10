@@ -197,7 +197,15 @@ githubRoutes.post('/import', async (req, res) => {
   try {
     const result = await importFromGithub({ githubToken, repoPath, onProgress });
     if (result.ok) {
-      send('done', { ok: true, files: result.files });
+      // Save credentials so they survive restarts and future syncs work
+      try {
+        await persistGithubEnv(githubToken, repoPath);
+        startAutoSync();
+        log.info('[git-import] Credentials saved, auto-sync started');
+      } catch (e) {
+        log.error('[git-import] Could not persist credentials:', e.message);
+      }
+      send('done', { ok: true, files: result.files, repoPath });
     } else {
       send('done', { ok: false, error: result.error });
     }
