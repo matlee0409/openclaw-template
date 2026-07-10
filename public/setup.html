@@ -927,11 +927,44 @@ async function launchApiKey(body, status, errBox, errItems) {
   status.className = 'ok';
   status.textContent = '✓ Gateway is running!';
 
+  // ── GitHub backup setup (if credentials were provided + verified) ──
+  const ghToken = (body.githubToken || '').trim();
+  const ghRepo  = (body.githubRepo  || '').trim();
+  if (ghToken && ghRepo) {
+    status.className = 'running';
+    status.innerHTML = '<span class="spinner"></span> Setting up GitHub backup…';
+    try {
+      const ghRes = await fetch('/api/github/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          githubToken: ghToken,
+          githubRepo:  ghRepo,
+          repoExists:  body.githubRepoExists  === '1',
+          repoIsEmpty: body.githubRepoIsEmpty !== '0' && body.githubRepoIsEmpty !== 'false',
+        }),
+      });
+      const ghData = await ghRes.json();
+      if (ghData.ok) {
+        status.className = 'ok';
+        status.textContent = '✓ Gateway running · GitHub backup configured (' + ghData.repoPath + ')';
+      } else {
+        status.className = 'ok';
+        status.textContent = '✓ Gateway running · GitHub backup warning: ' + (ghData.error || 'setup failed');
+      }
+    } catch (e) {
+      status.className = 'ok';
+      status.textContent = '✓ Gateway running · GitHub backup skipped: ' + e.message;
+    }
+  }
+
   if (hasPairingChannels()) {
     showPairingStep();
   } else {
-    status.textContent += ' Redirecting to admin…';
-    setTimeout(function() { window.location.href = '/admin'; }, 1500);
+    const cur = status.textContent;
+    status.textContent = cur + ' — Redirecting to admin…';
+    setTimeout(function() { window.location.href = '/admin'; }, 1800);
   }
 }
 

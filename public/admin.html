@@ -585,8 +585,8 @@
         <div id="version-banner" style="background:rgba(232,93,38,0.06); border:1px solid rgba(232,93,38,0.4);
                     border-radius:10px; padding:12px 16px; margin-bottom:18px;
                     font-family:var(--font-mono); font-size:12px; line-height:1.6;">
-          <strong style="color:var(--accent2)">&#9888; Built for OpenClaw 2026.6.6.</strong>
-          This template is pinned to and verified against <code>2026.6.6</code>.
+          <strong style="color:var(--accent2)">&#9888; Built for OpenClaw 2026.6.11.</strong>
+          This template is pinned to and verified against <code>2026.6.11</code>.
           If you pinned an older release and hit issues, bump
           <code>OPENCLAW_VERSION</code> in your Railway build args (needs Node &ge; 22.19).
         </div>
@@ -620,6 +620,30 @@
         </div>
 
         <!-- Gateway token display — shown only when OPENCLAW_GATEWAY_TOKEN is set -->
+        <!-- GitHub Backup status card -->
+        <div id="github-backup-card" style="margin-top:20px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:16px 20px;">
+          <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
+            <div style="font-size:12px; color:var(--text-dim); font-family:var(--font-mono); letter-spacing:0.05em; text-transform:uppercase; flex:1;">GitHub Backup</div>
+            <span id="gh-autosync-badge" style="display:none; font-size:10px; font-family:var(--font-mono); background:rgba(35,211,106,0.12); color:var(--green); border:1px solid rgba(35,211,106,0.3); border-radius:20px; padding:2px 8px; letter-spacing:0.06em;">AUTO-SYNC ON</span>
+            <button class="btn sm" id="btn-gh-sync-now" onclick="githubSyncNow()" style="display:none;">⟳ Sync Now</button>
+          </div>
+          <!-- Not configured -->
+          <div id="gh-not-configured" style="font-size:13px; color:var(--text-dim); line-height:1.6;">
+            Not configured. Add a GitHub token and repo in <a href="/setup" style="color:var(--accent);">/setup</a> to enable automatic backups.
+          </div>
+          <!-- Configured -->
+          <div id="gh-configured" style="display:none;">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+              <span id="gh-status-dot" style="width:8px; height:8px; border-radius:50%; background:var(--green); flex-shrink:0;"></span>
+              <a id="gh-repo-link" href="#" target="_blank" rel="noopener" style="font-family:var(--font-mono); font-size:13px; color:var(--accent); text-decoration:none; word-break:break-all;"></a>
+            </div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-family:var(--font-mono); font-size:12px; color:var(--text-dim);">
+              <div>Last sync: <span id="gh-last-sync" style="color:var(--text);">—</span></div>
+              <div>Status: <span id="gh-sync-status" style="color:var(--text);">—</span></div>
+            </div>
+          </div>
+        </div>
+
         <div id="token-card" style="display:none; margin-top:20px; background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:16px 20px;">
           <div style="font-size:12px; color:var(--text-dim); margin-bottom:8px; font-family:var(--font-mono); letter-spacing:0.05em; text-transform:uppercase;">Gateway Token</div>
           <div style="font-size:12px; color:var(--text-dim); margin-bottom:10px;">Paste this into the OpenClaw UI login screen when prompted for a Gateway Token.</div>
@@ -978,6 +1002,79 @@ async function refreshStatus() {
     document.getElementById('st-pairs').textContent = count;
     updatePairingBadge(count);
   } catch {}
+
+  // Refresh GitHub backup status
+  try {
+    const gh = await fetch('/api/github/status', { credentials: 'same-origin' }).then(r => r.json());
+    renderGithubStatus(gh);
+  } catch {}
+}
+
+function renderGithubStatus(gh) {
+  const notConf  = document.getElementById('gh-not-configured');
+  const conf     = document.getElementById('gh-configured');
+  const badge    = document.getElementById('gh-autosync-badge');
+  const syncBtn  = document.getElementById('btn-gh-sync-now');
+  const repoLink = document.getElementById('gh-repo-link');
+  const lastSync = document.getElementById('gh-last-sync');
+  const syncSt   = document.getElementById('gh-sync-status');
+
+  if (!gh || !gh.configured) {
+    notConf.style.display = '';
+    conf.style.display    = 'none';
+    badge.style.display   = 'none';
+    syncBtn.style.display = 'none';
+    return;
+  }
+
+  notConf.style.display = 'none';
+  conf.style.display    = '';
+  badge.style.display   = gh.autoSyncActive ? '' : 'none';
+  syncBtn.style.display = '';
+
+  const repo = gh.repoPath || '';
+  repoLink.href        = 'https://github.com/' + repo;
+  repoLink.textContent = repo;
+
+  if (gh.lastSync) {
+    const ts = gh.lastSync.ts ? new Date(gh.lastSync.ts).toLocaleString() : '—';
+    lastSync.textContent = ts;
+    if (gh.lastSync.ok) {
+      syncSt.style.color = 'var(--green)';
+      syncSt.textContent = gh.lastSync.hash ? '✓ ' + gh.lastSync.hash : (gh.lastSync.message || '✓ ok');
+    } else {
+      syncSt.style.color = 'var(--red)';
+      syncSt.textContent = '✗ ' + (gh.lastSync.error || 'failed').slice(0, 60);
+    }
+  } else {
+    lastSync.textContent = 'Never (pending first sync)';
+    syncSt.style.color   = 'var(--text-dim)';
+    syncSt.textContent   = gh.gitInitialized ? 'Repo initialised' : 'Not initialised';
+  }
+}
+
+async function githubSyncNow() {
+  const btn = document.getElementById('btn-gh-sync-now');
+  btn.disabled = true;
+  btn.textContent = '⟳ Syncing…';
+  try {
+    const res  = await fetch('/api/github/sync', { method: 'POST', credentials: 'same-origin' });
+    const data = await res.json();
+    if (data.ok) {
+      toast(data.hash ? 'Synced — commit ' + data.hash : 'Nothing to sync', 'ok');
+    } else {
+      toast('Sync failed: ' + (data.error || ''), 'err');
+    }
+  } catch (e) {
+    toast('Sync error: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⟳ Sync Now';
+    try {
+      const gh = await fetch('/api/github/status', { credentials: 'same-origin' }).then(r => r.json());
+      renderGithubStatus(gh);
+    } catch {}
+  }
 }
 
 function toggleTokenVisibility() {

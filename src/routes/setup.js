@@ -308,36 +308,8 @@ setupRoutes.post('/save', async (req, res) => {
       log.error('Gateway failed to start after setup:', err.message);
     });
 
-    // ── GitHub backup setup (optional) ────────────────────────────
-    const githubToken = String(data.githubToken || '').trim();
-    const githubRepoInput = String(data.githubRepo || '').trim();
-    if (githubToken && githubRepoInput) {
-      const repoPath = resolveRepoPath(githubRepoInput);
-      // repoExists/repoIsEmpty come from the verify step (hidden form fields)
-      const repoExists = data.githubRepoExists === '1';
-      const repoIsEmpty = data.githubRepoIsEmpty !== '0' && data.githubRepoIsEmpty !== 'false';
-      const repoMode = repoExists && !repoIsEmpty ? 'existing' : 'new';
-      log.info(`[git-sync] Setting up GitHub backup for ${repoPath} (mode=${repoMode})...`);
-      setImmediate(async () => {
-        try {
-          // Persist to env file so it survives container restarts
-          await saveGithubEnvVars(githubToken, repoPath);
-          // Ensure the remote repo exists (or verify we can access it)
-          const repoResult = await ensureGithubRepoExists({ githubToken, repoPath, mode: repoMode });
-          if (!repoResult.ok) {
-            log.error(`[git-sync] Repo setup failed: ${repoResult.error}`);
-            return;
-          }
-          // Init local git repo and push initial state (or fetch existing)
-          await initGitRepo({ githubToken, repoPath, repoIsEmpty: repoResult.repoIsEmpty ?? repoIsEmpty });
-          // Start hourly auto-sync
-          startAutoSync();
-          log.info('[git-sync] GitHub backup configured and active');
-        } catch (e) {
-          log.error('[git-sync] GitHub setup error:', e.message);
-        }
-      });
-    }
+    // GitHub backup is handled separately by the frontend via POST /api/github/setup
+    // after the gateway is confirmed running — so it can show real feedback to the user.
 
     res.json({ ok: true, message: 'Config saved. Gateway launching...' });
   } catch (err) {

@@ -8,6 +8,7 @@
  * POST /api/github/sync          — manual sync trigger (admin auth)
  */
 
+import fsp from 'fs/promises';
 import { Router } from 'express';
 import { requireAdminAuth } from '../middleware/auth.js';
 import {
@@ -16,8 +17,35 @@ import {
   gitSyncStatus,
   resolveRepoPath,
   importFromGithub,
+  ensureGithubRepoExists,
+  initGitRepo,
+  startAutoSync,
 } from '../services/gitSyncService.js';
+import { OPENCLAW_HOME, config } from '../config/index.js';
 import { log } from '../utils/log.js';
+
+/**
+ * Write GITHUB_TOKEN + GITHUB_WORKSPACE_REPO into the openclaw .env file
+ * and update process.env immediately so the running process picks them up.
+ */
+async function persistGithubEnv(githubToken, repoPath) {
+  let lines = [];
+  try {
+    const raw = await fsp.readFile(config.OPENCLAW_ENV_PATH, 'utf8');
+    lines = raw.split('\n').filter(l => l.trim() && !l.trim().startsWith('#'));
+  } catch { /* file may not exist yet */ }
+
+  const envMap = new Map(
+    lines.map(l => { const eq = l.indexOf('='); return eq > 0 ? [l.slice(0, eq), l.slice(eq + 1)] : null; }).filter(Boolean)
+  );
+  envMap.set('GITHUB_TOKEN', githubToken);
+  envMap.set('GITHUB_WORKSPACE_REPO', repoPath);
+  process.env.GITHUB_TOKEN = githubToken;
+  process.env.GITHUB_WORKSPACE_REPO = repoPath;
+
+  await fsp.mkdir(OPENCLAW_HOME, { recursive: true });
+  await fsp.writeFile(config.OPENCLAW_ENV_PATH, [...envMap.entries()].map(([k, v]) => `${k}=${v}`).join('\n') + '\n', 'utf8');
+}
 
 export const githubRoutes = Router();
 
@@ -52,6 +80,65 @@ githubRoutes.post('/verify', async (req, res) => {
     });
   } catch (err) {
     log.error('[github] verify error:', err.message);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── POST /api/github/setup ────────────────────────────────────────
+// Called by the setup wizard (and optionally admin) to wire up GitHub backup.
+// Saves credentials, creates/verifies the remote repo, inits local git, starts auto-sync.
+// No admin auth — may be called right after first launch before a session cookie exists.
+
+githubRoutes.post('/setup', async (req, res) => {
+  const githubToken  = String(req.body?.githubToken  || '').trim();
+  const repoInput    = String(req.body?.githubRepo   || '').trim();
+  const repoExists   = req.body?.repoExists  === true || req.body?.repoExists  === '1';
+  const repoIsEmpty  = req.body?.repoIsEmpty !== false && req.body?.repoIsEmpty !== '0' && req.body?.repoIsEmpty !== 'false';
+
+  if (!githubToken || !repoInput) {
+    return res.status(400).json({ ok: false, error: 'githubToken and githubRepo are required' });
+  }
+
+  const repoPath = resolveRepoPath(repoInput);
+  if (!repoPath.includes('/')) {
+    return res.status(400).json({ ok: false, error: 'Repo must be in owner/name format' });
+  }
+
+  const repoMode = repoExists && !repoIsEmpty ? 'existing' : 'new';
+  log.info(`[git-sync] /api/github/setup — repo=${repoPath} mode=${repoMode}`);
+
+  try {
+    // 1. Persist credentials to .env file immediately
+    await persistGithubEnv(githubToken, repoPath);
+    log.info('[git-sync] Credentials saved');
+
+    // 2. Create / verify remote repo
+    const repoResult = await ensureGithubRepoExists({ githubToken, repoPath, mode: repoMode });
+    if (!repoResult.ok) {
+      return res.status(400).json({ ok: false, error: repoResult.error });
+    }
+
+    // 3. Init local git repo and push initial snapshot
+    const initResult = await initGitRepo({
+      githubToken,
+      repoPath,
+      repoIsEmpty: repoResult.repoIsEmpty ?? repoIsEmpty,
+    });
+    if (!initResult.ok) {
+      return res.status(500).json({ ok: false, error: initResult.error || 'git init failed' });
+    }
+
+    // 4. Start hourly auto-sync
+    startAutoSync();
+
+    // 5. Run an initial sync right now so the repo has current data immediately
+    gitSync(`chore: initial backup from openclaw-railway ${new Date().toISOString()}`)
+      .catch(e => log.error('[git-sync] Initial sync error:', e.message));
+
+    log.info('[git-sync] GitHub backup fully configured');
+    return res.json({ ok: true, repoPath });
+  } catch (err) {
+    log.error('[git-sync] /api/github/setup error:', err.message);
     return res.status(500).json({ ok: false, error: err.message });
   }
 });
