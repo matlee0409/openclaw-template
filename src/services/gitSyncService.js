@@ -190,6 +190,54 @@ workspace/.openclaw/**
 
 // ── Git helpers ──────────────────────────────────────────────────
 
+/**
+ * OpenClaw sometimes initializes its own internal git repo directly inside
+ * workspace/ (behavior has shifted across versions — older releases nested
+ * it under workspace/.openclaw/, which is why that path is excluded below;
+ * newer releases have been seen creating workspace/.git directly).
+ *
+ * If we `git add -A` a directory that contains a nested .git, git registers
+ * the *whole directory* as a gitlink (submodule reference, mode 160000)
+ * pointing at that nested repo's current commit — regardless of .gitignore.
+ * If the nested repo has zero commits yet, the gitlink has no valid commit
+ * to point to, and any later `git add`/`commit`/`checkout` in the parent
+ * repo fails with:
+ *   "error: 'workspace/' does not have a commit checked out"
+ *
+ * We don't need OpenClaw's own internal git history for the GitHub backup —
+ * we only care about the files — so before staging, strip any nested .git
+ * directories found under workspace/ (never touch OPENCLAW_HOME/.git itself).
+ */
+function stripNestedGitRepos(rootDir) {
+  const workspaceDir = path.join(rootDir, 'workspace');
+  if (!fs.existsSync(workspaceDir)) return;
+
+  const stack = [workspaceDir];
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.name === '.git') {
+        try {
+          fs.rmSync(full, { recursive: true, force: true });
+          log.info(`[git-sync] Removed nested git repo at ${full} to avoid a broken gitlink`);
+        } catch (e) {
+          log.warn(`[git-sync] Could not remove nested git repo at ${full}: ${e.message}`);
+        }
+        continue;
+      }
+      stack.push(full);
+    }
+  }
+}
+
 function writeAskPass(askPassPath, githubToken) {
   fs.writeFileSync(
     askPassPath,
@@ -285,6 +333,7 @@ export async function initGitRepo({ githubToken, repoPath, repoIsEmpty }) {
 
       // Initial commit + push (if there's anything to commit)
       try {
+        stripNestedGitRepos(OPENCLAW_HOME);
         runGit(['add', '-A']);
         const diff = execFileSync('git', ['diff', '--cached', '--quiet'], {
           cwd: OPENCLAW_HOME, stdio: 'pipe', env: { ...process.env },
@@ -351,6 +400,7 @@ export async function gitSync(message) {
     }
 
     // Stage all
+    stripNestedGitRepos(OPENCLAW_HOME);
     execFileSync('git', ['add', '-A'], { cwd: OPENCLAW_HOME, stdio: 'pipe', env: { ...process.env } });
 
     // Check if there's anything to commit
