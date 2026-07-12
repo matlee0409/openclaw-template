@@ -399,14 +399,21 @@
       <label for="discordBotToken">Bot Token <span class="req">*</span></label>
       <input type="password" id="discordBotToken" name="discordBotToken" placeholder="MTxxxxx.xxx.xxx" autocomplete="off">
     </div>
-    <div class="field">
-      <label for="discordDmPolicy">DM Policy</label>
-      <select id="discordDmPolicy" name="discordDmPolicy">
-        <option value="open" selected>open (all DMs)</option>
-        <option value="pairing">pairing (approve each user)</option>
-        <option value="allowlist">allowlist</option>
-        <option value="disabled">disabled</option>
-      </select>
+    <div class="field-row">
+      <div class="field">
+        <label for="discordDmPolicy">DM Policy</label>
+        <select id="discordDmPolicy" name="discordDmPolicy">
+          <option value="open" selected>open (all DMs)</option>
+          <option value="pairing">pairing (approve each user)</option>
+          <option value="allowlist">allowlist</option>
+          <option value="disabled">disabled</option>
+        </select>
+        <div class="policy-hint" id="policy-hint-discord">Unknown senders must request pairing first</div>
+      </div>
+      <div class="field">
+        <label for="discordAllowFrom">Allow From <span class="hint">optional</span></label>
+        <input type="text" id="discordAllowFrom" name="discordAllowFrom" placeholder="discord:123456789012345678">
+      </div>
     </div>
   </div>
 
