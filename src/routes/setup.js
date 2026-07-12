@@ -146,7 +146,7 @@ async function applyPostOnboardConfig(data, stream) {
     await runConfigSetJson('channels.telegram', {
       enabled: true,
       botToken: data.telegramBotToken,
-      dmPolicy: data.telegramDmPolicy || 'pairing',
+      dmPolicy: data.telegramDmPolicy || 'open',
       groupPolicy: 'open',
       streaming: { mode: 'partial' },
       ...(data.telegramAllowFrom
@@ -162,7 +162,7 @@ async function applyPostOnboardConfig(data, stream) {
       enabled: true,
       token: data.discordBotToken,
       groupPolicy: 'open',
-      dm: { policy: data.discordDmPolicy || 'pairing' },
+      dm: { policy: data.discordDmPolicy || 'open' },
       ...(data.discordAllowFrom
         ? { allowFrom: data.discordAllowFrom.split(/[,\n]/).map(s => s.trim()).filter(Boolean) }
         : {}),

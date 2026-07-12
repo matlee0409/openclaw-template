@@ -14,6 +14,7 @@ import { spawn } from 'child_process';
 import { EventEmitter } from 'events';
 import httpProxy from 'http-proxy';
 import net from 'net';
+import path from 'path';
 import {
   GATEWAY_PORT,
   GATEWAY_HOST,
@@ -223,10 +224,12 @@ class GatewayManager extends EventEmitter {
     };
 
     // Match reference: openclaw gateway run --bind loopback --port 18789 --auth token --token <TOKEN>
+    const workspaceDir = path.join(DATA_DIR, '.openclaw', 'workspace');
     const args = [
       'gateway', 'run',
-      '--bind', 'loopback',
-      '--port', String(GATEWAY_PORT),
+      '--bind',      'loopback',
+      '--port',      String(GATEWAY_PORT),
+      '--workspace', workspaceDir,   // must match onboardBuilder so state lives in one place
       '--allow-unconfigured',
     ];
 

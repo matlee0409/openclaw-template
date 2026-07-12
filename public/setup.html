@@ -374,9 +374,9 @@
       <div class="field">
         <label for="telegramDmPolicy">DM Policy</label>
         <select id="telegramDmPolicy" name="telegramDmPolicy">
-          <option value="pairing" selected>pairing (recommended)</option>
+          <option value="open" selected>open (all DMs)</option>
+          <option value="pairing">pairing (approve each user)</option>
           <option value="allowlist">allowlist</option>
-          <option value="open">open (all DMs)</option>
           <option value="disabled">disabled</option>
         </select>
         <div class="policy-hint" id="policy-hint-telegram">Unknown senders must request pairing first</div>
@@ -402,9 +402,9 @@
     <div class="field">
       <label for="discordDmPolicy">DM Policy</label>
       <select id="discordDmPolicy" name="discordDmPolicy">
-        <option value="pairing" selected>pairing (recommended)</option>
+        <option value="open" selected>open (all DMs)</option>
+        <option value="pairing">pairing (approve each user)</option>
         <option value="allowlist">allowlist</option>
-        <option value="open">open</option>
         <option value="disabled">disabled</option>
       </select>
     </div>
