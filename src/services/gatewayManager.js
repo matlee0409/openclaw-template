@@ -14,7 +14,6 @@ import { spawn } from 'child_process';
 import { EventEmitter } from 'events';
 import httpProxy from 'http-proxy';
 import net from 'net';
-import path from 'path';
 import {
   GATEWAY_PORT,
   GATEWAY_HOST,
@@ -224,12 +223,17 @@ class GatewayManager extends EventEmitter {
     };
 
     // Match reference: openclaw gateway run --bind loopback --port 18789 --auth token --token <TOKEN>
-    const workspaceDir = path.join(DATA_DIR, '.openclaw', 'workspace');
+    //
+    // NOTE: `gateway run` does NOT accept a `--workspace` flag (it never did in
+    // recent versions — GatewayRunOpts has no `workspace` key). The workspace
+    // location is only configurable on `openclaw onboard` (see onboardBuilder.js);
+    // the gateway itself just reads whatever `openclaw.json` / OPENCLAW_STATE_DIR
+    // point at. Passing --workspace here fails with:
+    //   "OpenClaw does not recognize option "--workspace"."
     const args = [
       'gateway', 'run',
       '--bind',      'loopback',
       '--port',      String(GATEWAY_PORT),
-      '--workspace', workspaceDir,   // must match onboardBuilder so state lives in one place
       '--allow-unconfigured',
     ];
 
